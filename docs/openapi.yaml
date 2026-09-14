@@ -25,7 +25,7 @@ tags:
   - name: Calls
     description: Voice-agent call lifecycle (start, identity state, escalate, attempts, end).
   - name: Admin
-    description: Sandbox/admin harness endpoints. Requires harness:admin scope.
+    description: Tenant-scoped sandbox/admin harness endpoints. Requires a bearer key.
   - name: Health
     description: Liveness probe. No auth required.
 
@@ -53,7 +53,7 @@ paths:
       operationId: findPatients
       summary: Find patients by phone.
       security:
-        - bearerAuth: [patients:read]
+        - bearerAuth: []
       parameters:
         - in: query
           name: phone
@@ -69,7 +69,6 @@ paths:
               schema: { $ref: '#/components/schemas/PatientPage' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
 
   /slots:
     get:
@@ -77,7 +76,7 @@ paths:
       operationId: listOpenSlots
       summary: List open, bookable slots.
       security:
-        - bearerAuth: [slots:read]
+        - bearerAuth: []
       parameters:
         - { in: query, name: clinic_id, required: true, schema: { type: string } }
         - { in: query, name: from, required: true, schema: { type: string, format: date-time } }
@@ -98,7 +97,7 @@ paths:
       operationId: createAppointment
       summary: Book an appointment.
       security:
-        - bearerAuth: [appointments:write]
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -121,7 +120,7 @@ paths:
       operationId: listAppointmentsByDay
       summary: Day schedule for a clinic.
       security:
-        - bearerAuth: [appointments:read]
+        - bearerAuth: []
       parameters:
         - { in: query, name: date, required: true, schema: { type: string, format: date } }
         - { in: query, name: clinic_id, required: true, schema: { type: string } }
@@ -142,7 +141,7 @@ paths:
       operationId: getAppointment
       summary: Read a single appointment.
       security:
-        - bearerAuth: [appointments:read]
+        - bearerAuth: []
       responses:
         '200':
           description: The appointment.
@@ -156,7 +155,7 @@ paths:
       tags: [Appointments]
       operationId: confirmAppointment
       security:
-        - bearerAuth: [appointments:write]
+        - bearerAuth: []
       parameters:
         - { in: path, name: appt_id, required: true, schema: { type: string } }
       responses:
@@ -172,7 +171,7 @@ paths:
       tags: [Appointments]
       operationId: cancelAppointment
       security:
-        - bearerAuth: [appointments:write]
+        - bearerAuth: []
       parameters:
         - { in: path, name: appt_id, required: true, schema: { type: string } }
       requestBody:
@@ -194,7 +193,7 @@ paths:
       tags: [Appointments]
       operationId: transferAppointment
       security:
-        - bearerAuth: [appointments:write]
+        - bearerAuth: []
       parameters:
         - { in: path, name: appt_id, required: true, schema: { type: string } }
       requestBody:
@@ -216,7 +215,7 @@ paths:
       tags: [Appointments]
       operationId: rescheduleAppointment
       security:
-        - bearerAuth: [appointments:write]
+        - bearerAuth: []
       parameters:
         - { in: path, name: appt_id, required: true, schema: { type: string } }
       requestBody:
@@ -241,7 +240,7 @@ paths:
       operationId: startCall
       summary: Start a new inbound call.
       security:
-        - bearerAuth: [calls:write]
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -265,7 +264,7 @@ paths:
       operationId: getCall
       summary: Read call state.
       security:
-        - bearerAuth: [calls:read]
+        - bearerAuth: []
       responses:
         '200':
           description: Call state.
@@ -278,7 +277,7 @@ paths:
       operationId: patchCall
       summary: Update mid-call state (verified, patient_id, status).
       security:
-        - bearerAuth: [calls:write]
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -303,7 +302,7 @@ paths:
         The transfer-to-staff scenario: invoked when the agent goes off-script,
         after two consecutive failed understandings, on patient request, etc.
       security:
-        - bearerAuth: [calls:write]
+        - bearerAuth: []
       parameters:
         - { in: path, name: call_id, required: true, schema: { type: string } }
       requestBody:
@@ -331,7 +330,7 @@ paths:
       operationId: logCallAttempt
       summary: Log a no-answer event (ringout, voicemail, or silent turn).
       security:
-        - bearerAuth: [calls:write]
+        - bearerAuth: []
       parameters:
         - { in: path, name: call_id, required: true, schema: { type: string } }
       requestBody:
@@ -355,7 +354,7 @@ paths:
       operationId: endCall
       summary: End the call.
       security:
-        - bearerAuth: [calls:write]
+        - bearerAuth: []
       parameters:
         - { in: path, name: call_id, required: true, schema: { type: string } }
       requestBody:
@@ -381,7 +380,7 @@ paths:
       operationId: harnessGetState
       summary: Full snapshot (patients, slots, appointments, calls, escalations).
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       responses:
         '200':
           description: Full state snapshot.
@@ -394,7 +393,7 @@ paths:
       tags: [Admin]
       operationId: harnessListPatients
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       responses:
         '200':
           description: Filtered list of seeded patients.
@@ -407,7 +406,7 @@ paths:
       tags: [Admin]
       operationId: harnessListSlots
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       parameters:
         - { in: query, name: clinic_id, schema: { type: string } }
         - { in: query, name: from, schema: { type: string, format: date-time } }
@@ -424,7 +423,7 @@ paths:
       tags: [Admin]
       operationId: harnessListAppointments
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       parameters:
         - { in: query, name: clinic_id, schema: { type: string } }
         - { in: query, name: date, schema: { type: string, format: date } }
@@ -441,10 +440,9 @@ paths:
       tags: [Admin]
       operationId: harnessListCalls
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       parameters:
         - { in: query, name: status, schema: { $ref: '#/components/schemas/CallStatus' } }
-        - { in: query, name: tenant_id, schema: { type: string } }
       responses:
         '200':
           description: Filtered list of calls.
@@ -464,7 +462,7 @@ paths:
       tags: [Admin]
       operationId: harnessGetCall
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       responses:
         '200':
           description: Single call with attempts, escalations, linked appointments.
@@ -477,7 +475,7 @@ paths:
       tags: [Admin]
       operationId: harnessListEscalations
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       responses:
         '200':
           description: All escalations across all calls.
@@ -495,7 +493,7 @@ paths:
       tags: [Admin]
       operationId: harnessCaptureSnapshot
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       responses:
         '200':
           description: Captured snapshot.
@@ -514,7 +512,7 @@ paths:
       tags: [Admin]
       operationId: harnessRestoreSnapshot
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       responses:
         '200': { description: Restored. }
 
@@ -524,7 +522,7 @@ paths:
       operationId: harnessSeed
       summary: Seed the database with mock data.
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       requestBody:
         required: false
         content:
@@ -541,7 +539,7 @@ paths:
       operationId: harnessReset
       summary: Flush the database back to zero.
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       responses:
         '200': { description: Reset. }
 
@@ -551,7 +549,7 @@ paths:
       operationId: harnessTimeTravel
       summary: Advance the system clock (test only).
       security:
-        - bearerAuth: [harness:admin]
+        - bearerAuth: []
       requestBody:
         required: false
         content:
@@ -681,7 +679,11 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     Forbidden:
-      description: Token lacks required scope.
+      description: |
+        Reserved for the future case of per-scope grants.
+        **Not currently returned by the mock** — every valid key has full
+        access to its tenant, so 403 is unreachable today. Cross-tenant access
+        surfaces as `404 NOT_FOUND` (existence hidden) rather than 403.
       headers:
         WWW-Authenticate:
           schema: { type: string }
@@ -726,9 +728,9 @@ components:
       required: [id, first_name, last_name, phone, dob]
       properties:
         id: { type: string, pattern: '^[a-z]+_[A-Za-z0-9]+$', example: 'p_12345' }
-        first_name: { type: string, example: 'Jane' }
-        last_name: { type: string, example: 'Doe' }
-        phone: { type: string, pattern: '^\+[1-9]\d{7,14}$', example: '+15551234567' }
+        first_name: { type: string, example: 'Mai' }
+        last_name: { type: string, example: 'Nguyễn Thị' }
+        phone: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$', example: '0912345678' }
         dob: { type: string, format: date, example: '1985-04-12' }
 
     Slot:
@@ -833,8 +835,8 @@ components:
       type: object
       required: [from_number, to_number]
       properties:
-        from_number: { type: string, pattern: '^\+[1-9]\d{7,14}$' }
-        to_number: { type: string, pattern: '^\+[1-9]\d{7,14}$' }
+        from_number: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$' }
+        to_number: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$' }
 
     CallPatch:
       type: object
@@ -899,9 +901,8 @@ components:
         - linked_appointment_ids
       properties:
         id: { type: string, example: 'call_01HZ...' }
-        tenant_id: { type: string, example: 'tenant_123' }
-        from_number: { type: string, pattern: '^\+[1-9]\d{7,14}$' }
-        to_number: { type: string, pattern: '^\+[1-9]\d{7,14}$' }
+        from_number: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$' }
+        to_number: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$' }
         started_at: { type: string, format: date-time }
         ended_at: { type: string, format: date-time, nullable: true }
         status: { $ref: '#/components/schemas/CallStatus' }

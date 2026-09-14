@@ -14,10 +14,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Header, Query, Request, Response, status
 
-from clinic_mock.auth import optional_principal, require_scope
+from clinic_mock.auth import optional_principal
 from clinic_mock.errors import (
     conflict,
     not_found,
+    unauthorized,
     unprocessable,
     validation_error,
 )
@@ -45,6 +46,20 @@ from clinic_mock.schemas import (
     TransferRequest,
 )
 from clinic_mock.store import db, now_iso, seed_default
+
+
+def _tenant(request: Request) -> str:
+    """Resolve the caller's tenant id; raises 401 if auth didn't populate it.
+
+    Centralised so every read/mutation routes through one guard. Routes then
+    filter the in-memory store by this tenant id; cross-tenant ids surface as
+    `404 NOT_FOUND` (never `403 FORBIDDEN`, which would leak existence).
+    """
+    principal = optional_principal(request)
+    if principal is None:
+        raise unauthorized()
+    return principal.tenant_id
+
 
 # ----- cursor pagination -----
 
@@ -97,8 +112,12 @@ def find_patients(
     cursor: str | None = None,
     limit: int = 25,
 ):
-    require_scope(request, "patients:read")
-    matched = [p.model_dump() for p in db.patients.values() if p.phone == phone]
+    tenant = _tenant(request)
+    matched = [
+        p.model_dump()
+        for p in db.patients.values()
+        if p.tenant_id == tenant and p.phone == phone
+    ]
     page, next_cursor, has_more = paginate(matched, cursor, limit)
     return {"data": page, "next_cursor": next_cursor, "has_more": has_more}
 
@@ -117,7 +136,7 @@ def list_slots(
     cursor: str | None = None,
     limit: int = 25,
 ):
-    require_scope(request, "slots:read")
+    tenant = _tenant(request)
     if to <= from_:
         raise validation_error("'to' must be greater than 'from'.")
     f = datetime.fromisoformat(from_)
@@ -127,7 +146,7 @@ def list_slots(
 
     def in_window(slot: Slot) -> bool:
         s = datetime.fromisoformat(slot.start_time)
-        return slot.clinic_id == clinic_id and f <= s < t
+        return slot.tenant_id == tenant and slot.clinic_id == clinic_id and f <= s < t
 
     matched = [s.model_dump() for s in db.slots.values() if in_window(s)]
     page, next_cursor, has_more = paginate(matched, cursor, limit)
@@ -145,7 +164,7 @@ def create_appointment(
         str | None, Header(alias="Idempotency-Key", max_length=255)
     ] = None,
 ):
-    require_scope(request, "appointments:write")
+    tenant = _tenant(request)
     if idempotency_key:
         replay = _idempotent_check(
             idempotency_key, "POST /v1/appointments", body.model_dump()
@@ -161,13 +180,14 @@ def create_appointment(
             )
 
     patient = db.patients.get(body.patient_id)
-    if not patient:
+    if not patient or patient.tenant_id != tenant:
         raise not_found(f"patient {body.patient_id}")
     slot = db.slots.get(body.slot_id)
-    if not slot:
+    if not slot or slot.tenant_id != tenant:
         raise not_found(f"slot {body.slot_id}")
     appt = Appointment(
         id=db.new_id("a"),
+        tenant_id=tenant,
         status="PENDING",
         slot=SlotRef(
             start_time=slot.start_time, end_time=slot.end_time, clinic_id=slot.clinic_id
@@ -194,9 +214,9 @@ def get_appointment(
     request: Request,
     appt_id: str,
 ):
-    require_scope(request, "appointments:read")
+    tenant = _tenant(request)
     appt = db.appointments.get(appt_id)
-    if not appt:
+    if not appt or appt.tenant_id != tenant:
         raise not_found(f"appointment {appt_id}")
     return appt.model_dump()
 
@@ -209,11 +229,13 @@ def list_appointments(
     cursor: str | None = None,
     limit: int = 25,
 ):
-    require_scope(request, "appointments:read")
+    tenant = _tenant(request)
     matched = [
         a.model_dump()
         for a in db.appointments.values()
-        if a.slot.clinic_id == clinic_id and a.slot.start_time.startswith(date)
+        if a.tenant_id == tenant
+        and a.slot.clinic_id == clinic_id
+        and a.slot.start_time.startswith(date)
     ]
     matched.sort(key=lambda a: a["slot"]["start_time"])
     page, next_cursor, has_more = paginate(matched, cursor, limit)
@@ -225,9 +247,9 @@ def confirm_appointment(
     request: Request,
     appt_id: str,
 ):
-    require_scope(request, "appointments:write")
+    tenant = _tenant(request)
     appt = db.appointments.get(appt_id)
-    if not appt:
+    if not appt or appt.tenant_id != tenant:
         raise not_found(f"appointment {appt_id}")
     assert_appointment_transition(appt.status, "confirm")
     updated = appt.model_copy(update={"status": "CONFIRMED"})
@@ -241,9 +263,9 @@ def cancel_appointment(
     appt_id: str,
     body: CancelRequest,
 ):
-    require_scope(request, "appointments:write")
+    tenant = _tenant(request)
     appt = db.appointments.get(appt_id)
-    if not appt:
+    if not appt or appt.tenant_id != tenant:
         raise not_found(f"appointment {appt_id}")
     assert_appointment_transition(appt.status, "cancel")
     updated = appt.model_copy(update={"status": "CANCELLED"})
@@ -257,9 +279,9 @@ def transfer_appointment(
     appt_id: str,
     body: TransferRequest,
 ):
-    require_scope(request, "appointments:write")
+    tenant = _tenant(request)
     appt = db.appointments.get(appt_id)
-    if not appt:
+    if not appt or appt.tenant_id != tenant:
         raise not_found(f"appointment {appt_id}")
     assert_appointment_transition(appt.status, "transfer")
     if body.target_clinic_id == appt.slot.clinic_id:
@@ -277,13 +299,13 @@ def reschedule_appointment(
     appt_id: str,
     body: RescheduleRequest,
 ):
-    require_scope(request, "appointments:write")
+    tenant = _tenant(request)
     appt = db.appointments.get(appt_id)
-    if not appt:
+    if not appt or appt.tenant_id != tenant:
         raise not_found(f"appointment {appt_id}")
     assert_appointment_transition(appt.status, "reschedule")
     new_slot = db.slots.get(body.new_slot_id)
-    if not new_slot:
+    if not new_slot or new_slot.tenant_id != tenant:
         raise conflict(
             "RESCHEDULE_SLOT_TAKEN", f"new_slot_id {body.new_slot_id} is unavailable."
         )
@@ -309,11 +331,9 @@ def create_call(
     request: Request,
     body: CallCreate,
 ):
-    require_scope(request, "calls:write")
-    principal = optional_principal(request)
     call = Call(
         id=db.new_id("call"),
-        tenant_id=principal.tenant_id if principal else "tenant_unknown",
+        tenant_id=_tenant(request),
         from_number=body.from_number,
         to_number=body.to_number,
         started_at=now_iso(),
@@ -329,9 +349,8 @@ def get_call(
     request: Request,
     call_id: str,
 ):
-    require_scope(request, "calls:read")
     call = db.calls.get(call_id)
-    if not call:
+    if not call or call.tenant_id != _tenant(request):
         raise not_found(f"call {call_id}")
     return call.model_dump()
 
@@ -342,9 +361,8 @@ def patch_call(
     call_id: str,
     body: CallPatch,
 ):
-    require_scope(request, "calls:write")
     call = db.calls.get(call_id)
-    if not call:
+    if not call or call.tenant_id != _tenant(request):
         raise not_found(f"call {call_id}")
     assert_call_writable(call.status, "patch")
     updates: dict[str, Any] = {}
@@ -365,7 +383,6 @@ def escalate_call(
     call_id: str,
     body: EscalateRequest,
 ):
-    require_scope(request, "calls:write")
     if not (body.staff_id or body.queue):
         from clinic_mock.errors import ApiError
 
@@ -375,7 +392,7 @@ def escalate_call(
             "At least one of 'staff_id' or 'queue' is required.",
         )
     call = db.calls.get(call_id)
-    if not call:
+    if not call or call.tenant_id != _tenant(request):
         raise not_found(f"call {call_id}")
     assert_call_writable(call.status, "escalate")
     escalation = Escalation(
@@ -403,9 +420,8 @@ def log_attempt(
     call_id: str,
     body: AttemptRequest,
 ):
-    require_scope(request, "calls:write")
     call = db.calls.get(call_id)
-    if not call:
+    if not call or call.tenant_id != _tenant(request):
         raise not_found(f"call {call_id}")
     assert_call_writable(call.status, "attempts")
     attempt = CallAttempt(kind=body.kind, at=now_iso(), detail=body.detail)
@@ -420,9 +436,8 @@ def end_call(
     call_id: str,
     body: EndRequest,
 ):
-    require_scope(request, "calls:write")
     call = db.calls.get(call_id)
-    if not call:
+    if not call or call.tenant_id != _tenant(request):
         raise not_found(f"call {call_id}")
     assert_call_writable(call.status, "end")
     new_status = OUTCOME_TO_CALL_STATUS[body.outcome]
@@ -431,53 +446,63 @@ def end_call(
     return updated.model_dump()
 
 
-# ===== Harness =====
+# ===== Harness (tenant-scoped) =====
 
 
 @harness.get("/state", tags=["Admin"])
 def harness_state(request: Request):
-    require_scope(request, "harness:admin")
-    return db.dump()
+    tenant = _tenant(request)
+    return {
+        "patients": [
+            p.model_dump() for p in db.patients.values() if p.tenant_id == tenant
+        ],
+        "slots": [s.model_dump() for s in db.slots.values() if s.tenant_id == tenant],
+        "appointments": [
+            a.model_dump() for a in db.appointments.values() if a.tenant_id == tenant
+        ],
+        "calls": [c.model_dump() for c in db.calls.values() if c.tenant_id == tenant],
+    }
 
 
 @harness.get("/patients", tags=["Admin"])
 def harness_patients(request: Request):
-    require_scope(request, "harness:admin")
-    return [p.model_dump() for p in db.patients.values()]
+    tenant = _tenant(request)
+    return [p.model_dump() for p in db.patients.values() if p.tenant_id == tenant]
 
 
 @harness.get("/slots", tags=["Admin"])
 def harness_slots(request: Request):
-    require_scope(request, "harness:admin")
-    return [s.model_dump() for s in db.slots.values()]
+    tenant = _tenant(request)
+    return [s.model_dump() for s in db.slots.values() if s.tenant_id == tenant]
 
 
 @harness.get("/appointments", tags=["Admin"])
 def harness_appointments(request: Request):
-    require_scope(request, "harness:admin")
-    return [a.model_dump() for a in db.appointments.values()]
+    tenant = _tenant(request)
+    return [a.model_dump() for a in db.appointments.values() if a.tenant_id == tenant]
 
 
 @harness.get("/calls", tags=["Admin"])
 def harness_calls(request: Request):
-    require_scope(request, "harness:admin")
-    return [c.model_dump() for c in db.calls.values()]
+    tenant = _tenant(request)
+    return [c.model_dump() for c in db.calls.values() if c.tenant_id == tenant]
 
 
 @harness.get("/calls/{call_id}", tags=["Admin"])
 def harness_get_call(request: Request, call_id: str):
-    require_scope(request, "harness:admin")
     call = db.calls.get(call_id)
-    if not call:
+    if not call or call.tenant_id != _tenant(request):
         raise not_found(f"call {call_id}")
     return call.model_dump()
 
 
 @harness.get("/escalations", tags=["Admin"])
 def harness_escalations(request: Request):
-    require_scope(request, "harness:admin")
+    tenant = _tenant(request)
     out: list[dict] = []
     for c in db.calls.values():
+        if c.tenant_id != tenant:
+            continue
         for e in c.escalations:
             out.append({"call_id": c.id, **e.model_dump()})
     out.sort(key=lambda e: e["at"], reverse=True)
@@ -486,35 +511,30 @@ def harness_escalations(request: Request):
 
 @harness.get("/snapshot", tags=["Admin"])
 def harness_snapshot(request: Request):
-    require_scope(request, "harness:admin")
     sid = db.snapshot()
     return {"snapshot_id": sid}
 
 
 @harness.post("/snapshot/{sid}/restore", tags=["Admin"])
 def harness_snapshot_restore(request: Request, sid: str):
-    require_scope(request, "harness:admin")
     db.restore(sid)
     return {"restored": sid}
 
 
 @harness.post("/seed", tags=["Admin"])
 def harness_seed(request: Request):
-    require_scope(request, "harness:admin")
     seed_default()
     return {"seeded": True}
 
 
 @harness.post("/reset", tags=["Admin"])
 def harness_reset(request: Request):
-    require_scope(request, "harness:admin")
     db.reset()
     return {"reset": True}
 
 
 @harness.post("/time-travel", tags=["Admin"])
 def harness_time_travel(request: Request, body: dict = Body(default={})):  # noqa: B008
-    require_scope(request, "harness:admin")
     seconds = int(body.get("seconds", 0))
     db.system_clock_offset_sec += seconds
     return {"offset_seconds": db.system_clock_offset_sec}

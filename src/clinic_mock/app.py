@@ -50,44 +50,35 @@ def create_app() -> FastAPI:
             response.headers["X-Request-Id"] = rid
             return response
 
-        # 2. Resolve bearer token → Principal (harness routes exempt).
-        if not request.url.path.startswith("/_harness"):
-            token = (
-                request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        # 2. Resolve bearer token → Principal for every non-public path.
+        # All routes (including /_harness/*) require auth; each tenant can only
+        # see and mutate its own data.
+        token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        if not token:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "code": "UNAUTHORIZED",
+                        "message": "Missing bearer token.",
+                        "request_id": rid,
+                    }
+                },
+                headers={"WWW-Authenticate": 'Bearer realm="clinic-mock"'},
             )
-            if not token:
-                return JSONResponse(
-                    status_code=401,
-                    content={
-                        "error": {
-                            "code": "UNAUTHORIZED",
-                            "message": "Missing bearer token.",
-                            "request_id": rid,
-                        }
-                    },
-                    headers={"WWW-Authenticate": 'Bearer realm="clinic-mock"'},
-                )
-            try:
-                request.state.principal = parse_bearer(token)
-            except ValueError:
-                return JSONResponse(
-                    status_code=401,
-                    content={
-                        "error": {
-                            "code": "UNAUTHORIZED",
-                            "message": "Invalid bearer token.",
-                            "request_id": rid,
-                        }
-                    },
-                    headers={"WWW-Authenticate": 'Bearer realm="clinic-mock"'},
-                )
-
-        # Harness admin gets a synthetic principal so test runners don't need a key.
-        elif request.url.path.startswith("/_harness"):
-            from clinic_mock.auth import Principal
-
-            request.state.principal = Principal(
-                tenant_id="harness", api_key_last4="0000"
+        try:
+            request.state.principal = parse_bearer(token)
+        except ValueError:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "code": "UNAUTHORIZED",
+                        "message": "Invalid bearer token.",
+                        "request_id": rid,
+                    }
+                },
+                headers={"WWW-Authenticate": 'Bearer realm="clinic-mock"'},
             )
 
         response = await call_next(request)

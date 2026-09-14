@@ -20,6 +20,9 @@ IsoDate = Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 
 class Patient(BaseModel):
     id: str
+    # tenant_id is server-side only: scopes reads/mutations and never leaves the
+    # boundary in API responses.
+    tenant_id: str = Field(exclude=True)
     first_name: str
     last_name: str
     phone: Phone
@@ -28,6 +31,7 @@ class Patient(BaseModel):
 
 class Slot(BaseModel):
     slot_id: str
+    tenant_id: str = Field(exclude=True)
     clinic_id: str
     start_time: IsoDateTime
     end_time: IsoDateTime
@@ -66,6 +70,7 @@ TransferReason = Literal[
 
 class Appointment(BaseModel):
     id: str
+    tenant_id: str = Field(exclude=True)
     status: AppointmentStatus
     slot: SlotRef
     patient: PatientRef
@@ -124,7 +129,7 @@ class Escalation(BaseModel):
 
 class Call(BaseModel):
     id: str
-    tenant_id: str
+    tenant_id: str = Field(exclude=True)
     from_number: Phone
     to_number: Phone
     started_at: IsoDateTime

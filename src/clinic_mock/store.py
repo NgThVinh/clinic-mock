@@ -87,6 +87,7 @@ DEFAULT_SEED = {
     "patients": [
         {
             "id": "p_12345",
+            "tenant_id": "demo1",
             "first_name": "Mai",
             "last_name": "Nguyễn Thị",
             "phone": "0912345678",
@@ -94,6 +95,7 @@ DEFAULT_SEED = {
         },
         {
             "id": "p_67890",
+            "tenant_id": "demo2",
             "first_name": "Nam",
             "last_name": "Trần Văn",
             "phone": "0987654321",
@@ -103,6 +105,7 @@ DEFAULT_SEED = {
     "slots": [
         {
             "slot_id": "s_987",
+            "tenant_id": "demo1",
             "clinic_id": "c_001",
             "start_time": "2026-09-15T09:00:00Z",
             "end_time": "2026-09-15T09:30:00Z",
@@ -110,6 +113,7 @@ DEFAULT_SEED = {
         },
         {
             "slot_id": "s_988",
+            "tenant_id": "demo1",
             "clinic_id": "c_001",
             "start_time": "2026-09-15T09:30:00Z",
             "end_time": "2026-09-15T10:00:00Z",
@@ -117,6 +121,7 @@ DEFAULT_SEED = {
         },
         {
             "slot_id": "s_1024",
+            "tenant_id": "demo2",
             "clinic_id": "c_002",
             "start_time": "2026-09-15T11:00:00Z",
             "end_time": "2026-09-15T11:30:00Z",

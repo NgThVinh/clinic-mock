@@ -27,7 +27,7 @@ This document is the authoritative human-readable contract; the companion [`open
 
 | Header | Required | Description |
 | :--- | :--- | :--- |
-| `Authorization` | yes (except `/_harness/*`) | `Bearer <api_key>` — see [Authentication](#2-authentication). |
+| `Authorization` | yes (except `/health`, `/docs`, `/openapi.json`, `/redoc`) | `Bearer <api_key>` — see [Authentication](#2-authentication). |
 | `Content-Type` | on requests with a body | Must be `application/json; charset=utf-8`. |
 | `Accept-Version` | recommended | API version; defaults to `v1` if absent — see [Versioning](#3-versioning). |
 | `Idempotency-Key` | recommended on `POST` | Stable per-tenant key for safe replays — see [Idempotency](#8-idempotency). |
@@ -41,52 +41,45 @@ This document is the authoritative human-readable contract; the companion [`open
 | `X-Request-Id` | Server-issued if the client omitted one. |
 | `X-RateLimit-*` | Current bucket state — see [Rate Limiting](#6-rate-limiting). |
 
-## 2. Authentication
+## 2. Authentication & Tenant Isolation
 
-The mock uses **mock-grade bearer-token auth**: a single API key per tenant, no JWT, no signature, no per-scope grants. Every valid key has full access to its tenant. A real implementation would validate HS256 signatures against an IDP — out of scope for this mock.
+The mock uses **mock-grade bearer-token auth**: a single API key per tenant, no JWT, no signature, no per-scope grants. Every valid key has full access to its tenant and only its tenant. A real implementation would validate HS256 signatures against an IDP — out of scope for this mock.
 
 ### 2.1 Request
 
-All endpoints under `/v1/...` require a bearer token. `/_harness/*`, `/health`, and the docs endpoints (`/docs`, `/openapi.json`, `/redoc`) skip auth.
+**All endpoints require a bearer token**, including `/_harness/*`. Only the docs endpoints (`/docs`, `/openapi.json`, `/redoc`) and `/health` skip auth.
 
 ```
 Authorization: Bearer <api_key>
 ```
 
-* `<api_key>` must start with the prefix `sk-`.
-* Keys are registered via the `MOCK_API_KEYS` env var as a comma-separated list of `tenant_id:sk-xxx` entries.
+* `<api_key>` must start with the prefix `sk_`.
+* Keys are registered via the `MOCK_API_KEYS` env var as a comma-separated list of `tenant_id:sk_xxx` entries.
+* The key resolves to exactly one `tenant_id`; every read and mutation in the request is scoped to that tenant.
 * No expiration, no rotation, no revocation — a key is valid for as long as it is present in `MOCK_API_KEYS` and is removed only by editing the env.
-* The default seed is `tenant_demo:sk-dev-demo` so the mock is usable out-of-the-box.
 
-### 2.2 Failure Modes
+### 2.2 Tenant Isolation Guarantees
+
+* A caller **cannot list, read, or mutate another tenant's data**. Cross-tenant access is hidden, not forbidden — see §2.3.
+* The `tenant_id` is **never returned in response payloads**. It exists server-side only to scope queries and is marked `exclude=True` on every response model.
+* `/_harness/*` is **per-tenant**, not global. Each key sees only the patients, slots, appointments, calls, and escalations belonging to its own tenant — even via `/state`.
+
+### 2.3 Failure Modes
 
 | HTTP | Code | When | Response Header |
 | :---: | :--- | :--- | :--- |
-| `401` | `UNAUTHORIZED` | Token missing, malformed (no `sk-` prefix), or unknown to `MOCK_API_KEYS`. | `WWW-Authenticate: Bearer realm="clinic-mock"` |
+| `401` | `UNAUTHORIZED` | Token missing, malformed (no `sk_` prefix), or unknown to `MOCK_API_KEYS`. | `WWW-Authenticate: Bearer realm="clinic-mock"` |
+| `404` | `NOT_FOUND` | Resource exists but belongs to another tenant (existence is hidden, never `403`). | — |
 
-`403 FORBIDDEN` is **defined** for the future case of per-scope grants, but the mock does not currently enforce per-scope checks — every valid key passes every scope guard, so `403` is unreachable today.
-
-### 2.3 Scopes (declared, not enforced)
-
-These scopes are the conceptual access boundaries the mock uses to label endpoints. They are **not enforced** at runtime — `require_scope(...)` only verifies that a valid key was presented, not which scopes the key carries.
-
-| Scope | Endpoint Group |
-| :--- | :--- |
-| `patients:read` | `GET /patients` |
-| `slots:read` | `GET /slots` |
-| `appointments:read` | `GET /appointments`, `GET /appointments/{id}` |
-| `appointments:write` | `POST /appointments` and all `POST /appointments/{id}/...` |
-| `calls:read` | `GET /calls`, `GET /calls/{id}` |
-| `calls:write` | `POST /calls`, `PATCH /calls/{id}`, `POST /calls/{id}/escalate`, `POST /calls/{id}/attempts`, `POST /calls/{id}/end` |
-| `harness:admin` | `GET` and `POST` under `/_harness/*` (auth-exempt; synthetic principal auto-assigned) |
+`403 FORBIDDEN` is **defined** for the future case of per-scope grants, but the mock does not currently enforce per-scope checks — every valid key has full access to its tenant, so `403` is unreachable today.
 
 ### 2.4 Operator Configuration
 
 | Env Var | Required | Description |
 | :--- | :--- | :--- |
-| `MOCK_API_KEYS` | yes for multi-tenant testing | Comma-separated `tenant_id:sk-xxx` entries. Default: `tenant_demo:sk-dev-demo`. |
+| `MOCK_API_KEYS` | yes for multi-tenant testing | Comma-separated `tenant_id:sk_xxx` entries. |
 
-Entries that lack the `sk-` prefix or the `tenant:key` shape are silently dropped — typos in env should not crash the mock.
+Entries that lack the `sk_` prefix or the `tenant:key` shape are silently dropped — typos in env should not crash the mock.
 
 ## 3. Versioning
 
@@ -102,7 +95,7 @@ Versions travel in the URL (`/v1`) **and** in the `Accept-Version` header.
 | :--- | :--- | :--- |
 | Production | `https://api.clinic.example/v1` | Real patient data. |
 | Sandbox | `https://sandbox.api.clinic.example/v1` | Synthetic data; identical contract. |
-| Harness (admin only) | `https://{api,sandbox}.clinic.example/_harness/*` | Requires `harness:admin`; not subject to per-tenant rate limits; **never expose to end users**. |
+| Harness (per-tenant) | `https://{api,sandbox}.clinic.example/_harness/*` | Requires a bearer key; scoped to the caller's tenant; **never expose to end users**. |
 
 ## 5. Pagination
 
@@ -398,7 +391,7 @@ Ends the call.
 
 ### Admin & Operations
 
-Endpoints for admins and automated test suites. **Never expose to end users.** Required scope: `harness:admin`. Not subject to per-tenant rate limits.
+Endpoints for admins and automated test suites. **Never expose to end users.** Require a bearer key and are scoped to the caller's tenant (each key sees only its own data, even via `/state`).
 
 **State inspection (read-only):**
 

@@ -6,8 +6,8 @@ Every key starts with `sk_` and grants full access to its tenant — no
 per-scope grant, no JWT. Mock-grade only; real auth would validate
 HS256 signatures against an IDP, which is out of scope.
 
-Harness routes (`/_harness/*`) are exempt; middleware assigns a synthetic
-admin principal so test runners don't need a key.
+All routes (including `/_harness/*`) require auth. Cross-tenant reads
+return `404 NOT_FOUND` rather than `403 FORBIDDEN` so existence is hidden.
 """
 
 from __future__ import annotations
@@ -19,26 +19,11 @@ from clinic_mock.config import settings
 
 KEY_PREFIX = "sk_"
 
-ALL_SCOPES = frozenset(
-    {
-        "patients:read",
-        "slots:read",
-        "appointments:read",
-        "appointments:write",
-        "calls:read",
-        "calls:write",
-        "harness:admin",
-    }
-)
-
 
 @dataclass(frozen=True)
 class Principal:
     tenant_id: str
     api_key_last4: str
-
-    def has(self, scope: str) -> bool:
-        return True
 
 
 @lru_cache(maxsize=1)
@@ -74,15 +59,6 @@ def parse_bearer(token: str) -> Principal:
     if tenant_id is None:
         raise ValueError("unknown api key")
     return Principal(tenant_id=tenant_id, api_key_last4=token[-4:])
-
-
-def require_scope(request, scope: str) -> Principal:
-    principal: Principal | None = getattr(request.state, "principal", None)
-    if principal is None:
-        from clinic_mock.errors import unauthorized
-
-        raise unauthorized()
-    return principal
 
 
 def optional_principal(request) -> Principal | None:
