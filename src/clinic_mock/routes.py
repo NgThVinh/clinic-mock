@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Header, Query, Request, Response, status
@@ -46,8 +46,8 @@ from clinic_mock.schemas import (
 )
 from clinic_mock.store import db, now_iso, seed_default
 
-
 # ----- cursor pagination -----
+
 
 def encode_cursor(payload: dict[str, Any]) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
@@ -58,13 +58,15 @@ def decode_cursor(cursor: str) -> dict[str, Any]:
     return json.loads(base64.urlsafe_b64decode(cursor + pad).decode())
 
 
-def paginate(items: list, cursor: str | None, limit: int) -> tuple[list, str | None, bool]:
+def paginate(
+    items: list, cursor: str | None, limit: int
+) -> tuple[list, str | None, bool]:
     limit = max(1, min(limit, 100))
     start = 0
     if cursor:
         try:
             start = int(decode_cursor(cursor).get("offset", 0))
-        except Exception:
+        except Exception:  # noqa: BLE001
             start = 0
     page = items[start : start + limit]
     next_offset = start + limit
@@ -80,6 +82,7 @@ harness = APIRouter(prefix="/_harness")
 
 
 # ===== Discovery =====
+
 
 @v1.get("/patients", tags=["Discovery"])
 def find_patients(
@@ -98,21 +101,26 @@ def find_patients(
 def list_slots(
     request: Request,
     clinic_id: str,
-    from_: Annotated[str, Query(alias="from", pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")],
-    to: Annotated[str, Query(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")],
+    from_: Annotated[
+        str,
+        Query(alias="from", pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$"),
+    ],
+    to: Annotated[
+        str, Query(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
+    ],
     cursor: str | None = None,
     limit: int = 25,
 ):
-    require_scope(request, 'slots:read')
+    require_scope(request, "slots:read")
     if to <= from_:
         raise validation_error("'to' must be greater than 'from'.")
-    f = datetime.fromisoformat(from_.replace("Z", "+00:00"))
-    t = datetime.fromisoformat(to.replace("Z", "+00:00"))
+    f = datetime.fromisoformat(from_)
+    t = datetime.fromisoformat(to)
     if (t - f) > timedelta(days=14):
         raise validation_error("'from'..'to' window must be <= 14 days.")
 
     def in_window(slot: Slot) -> bool:
-        s = datetime.fromisoformat(slot.start_time.replace("Z", "+00:00"))
+        s = datetime.fromisoformat(slot.start_time)
         return slot.clinic_id == clinic_id and f <= s < t
 
     matched = [s.model_dump() for s in db.slots.values() if in_window(s)]
@@ -122,20 +130,28 @@ def list_slots(
 
 # ===== Appointments =====
 
+
 @v1.post("/appointments", status_code=status.HTTP_201_CREATED, tags=["Appointments"])
 def create_appointment(
     request: Request,
     body: AppointmentCreate,
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key", max_length=255)] = None,
+    idempotency_key: Annotated[
+        str | None, Header(alias="Idempotency-Key", max_length=255)
+    ] = None,
 ):
-    require_scope(request, 'appointments:write')
+    require_scope(request, "appointments:write")
     if idempotency_key:
-        replay = _idempotent_check(idempotency_key, "POST /v1/appointments", body.model_dump())
+        replay = _idempotent_check(
+            idempotency_key, "POST /v1/appointments", body.model_dump()
+        )
         if replay is not None:
             return Response(
                 content=json.dumps(replay["body"]),
                 status_code=replay["status"],
-                headers={"Idempotent-Replayed": "true", "Content-Type": "application/json"},
+                headers={
+                    "Idempotent-Replayed": "true",
+                    "Content-Type": "application/json",
+                },
             )
 
     patient = db.patients.get(body.patient_id)
@@ -147,15 +163,23 @@ def create_appointment(
     appt = Appointment(
         id=db.new_id("a"),
         status="PENDING",
-        slot=SlotRef(start_time=slot.start_time, end_time=slot.end_time, clinic_id=slot.clinic_id),
-        patient=PatientRef(id=patient.id, name=f"{patient.first_name} {patient.last_name}", phone=patient.phone),
+        slot=SlotRef(
+            start_time=slot.start_time, end_time=slot.end_time, clinic_id=slot.clinic_id
+        ),
+        patient=PatientRef(
+            id=patient.id,
+            name=f"{patient.first_name} {patient.last_name}",
+            phone=patient.phone,
+        ),
     )
     db.appointments[appt.id] = appt
     db.slots.pop(slot.slot_id, None)  # consumed
 
     body_out = appt.model_dump()
     if idempotency_key:
-        _idempotent_store(idempotency_key, "POST /v1/appointments", body.model_dump(), 201, body_out)
+        _idempotent_store(
+            idempotency_key, "POST /v1/appointments", body.model_dump(), 201, body_out
+        )
     return body_out
 
 
@@ -164,7 +188,7 @@ def get_appointment(
     request: Request,
     appt_id: str,
 ):
-    require_scope(request, 'appointments:read')
+    require_scope(request, "appointments:read")
     appt = db.appointments.get(appt_id)
     if not appt:
         raise not_found(f"appointment {appt_id}")
@@ -179,7 +203,7 @@ def list_appointments(
     cursor: str | None = None,
     limit: int = 25,
 ):
-    require_scope(request, 'appointments:read')
+    require_scope(request, "appointments:read")
     matched = [
         a.model_dump()
         for a in db.appointments.values()
@@ -195,7 +219,7 @@ def confirm_appointment(
     request: Request,
     appt_id: str,
 ):
-    require_scope(request, 'appointments:write')
+    require_scope(request, "appointments:write")
     appt = db.appointments.get(appt_id)
     if not appt:
         raise not_found(f"appointment {appt_id}")
@@ -211,7 +235,7 @@ def cancel_appointment(
     appt_id: str,
     body: CancelRequest,
 ):
-    require_scope(request, 'appointments:write')
+    require_scope(request, "appointments:write")
     appt = db.appointments.get(appt_id)
     if not appt:
         raise not_found(f"appointment {appt_id}")
@@ -227,13 +251,15 @@ def transfer_appointment(
     appt_id: str,
     body: TransferRequest,
 ):
-    require_scope(request, 'appointments:write')
+    require_scope(request, "appointments:write")
     appt = db.appointments.get(appt_id)
     if not appt:
         raise not_found(f"appointment {appt_id}")
     assert_appointment_transition(appt.status, "transfer")
     if body.target_clinic_id == appt.slot.clinic_id:
-        raise validation_error("'target_clinic_id' must differ from current 'clinic_id'.")
+        raise validation_error(
+            "'target_clinic_id' must differ from current 'clinic_id'."
+        )
     updated = appt.model_copy(update={"status": "TRANSFERRED"})
     db.appointments[appt_id] = updated
     return updated.model_dump()
@@ -245,30 +271,39 @@ def reschedule_appointment(
     appt_id: str,
     body: RescheduleRequest,
 ):
-    require_scope(request, 'appointments:write')
+    require_scope(request, "appointments:write")
     appt = db.appointments.get(appt_id)
     if not appt:
         raise not_found(f"appointment {appt_id}")
     assert_appointment_transition(appt.status, "reschedule")
     new_slot = db.slots.get(body.new_slot_id)
     if not new_slot:
-        raise conflict("RESCHEDULE_SLOT_TAKEN", f"new_slot_id {body.new_slot_id} is unavailable.")
+        raise conflict(
+            "RESCHEDULE_SLOT_TAKEN", f"new_slot_id {body.new_slot_id} is unavailable."
+        )
     db.slots.pop(new_slot.slot_id, None)
-    updated = appt.model_copy(update={
-        "slot": SlotRef(start_time=new_slot.start_time, end_time=new_slot.end_time, clinic_id=new_slot.clinic_id),
-    })
+    updated = appt.model_copy(
+        update={
+            "slot": SlotRef(
+                start_time=new_slot.start_time,
+                end_time=new_slot.end_time,
+                clinic_id=new_slot.clinic_id,
+            ),
+        }
+    )
     db.appointments[appt_id] = updated
     return updated.model_dump()
 
 
 # ===== Calls =====
 
+
 @v1.post("/calls", status_code=status.HTTP_201_CREATED, tags=["Calls"])
 def create_call(
     request: Request,
     body: CallCreate,
 ):
-    require_scope(request, 'calls:write')
+    require_scope(request, "calls:write")
     principal = optional_principal(request)
     call = Call(
         id=db.new_id("call"),
@@ -288,7 +323,7 @@ def get_call(
     request: Request,
     call_id: str,
 ):
-    require_scope(request, 'calls:read')
+    require_scope(request, "calls:read")
     call = db.calls.get(call_id)
     if not call:
         raise not_found(f"call {call_id}")
@@ -301,7 +336,7 @@ def patch_call(
     call_id: str,
     body: CallPatch,
 ):
-    require_scope(request, 'calls:write')
+    require_scope(request, "calls:write")
     call = db.calls.get(call_id)
     if not call:
         raise not_found(f"call {call_id}")
@@ -324,9 +359,10 @@ def escalate_call(
     call_id: str,
     body: EscalateRequest,
 ):
-    require_scope(request, 'calls:write')
+    require_scope(request, "calls:write")
     if not (body.staff_id or body.queue):
         from clinic_mock.errors import ApiError
+
         raise ApiError(
             400,
             "INVALID_ESCALATION_TARGET",
@@ -342,22 +378,26 @@ def escalate_call(
         reason=body.reason,
         at=now_iso(),
     )
-    updated = call.model_copy(update={
-        "status": "ESCALATED",
-        "escalations": [*call.escalations, escalation],
-        "ended_at": now_iso(),
-    })
+    updated = call.model_copy(
+        update={
+            "status": "ESCALATED",
+            "escalations": [*call.escalations, escalation],
+            "ended_at": now_iso(),
+        }
+    )
     db.calls[call_id] = updated
     return updated.model_dump()
 
 
-@v1.post("/calls/{call_id}/attempts", status_code=status.HTTP_201_CREATED, tags=["Calls"])
+@v1.post(
+    "/calls/{call_id}/attempts", status_code=status.HTTP_201_CREATED, tags=["Calls"]
+)
 def log_attempt(
     request: Request,
     call_id: str,
     body: AttemptRequest,
 ):
-    require_scope(request, 'calls:write')
+    require_scope(request, "calls:write")
     call = db.calls.get(call_id)
     if not call:
         raise not_found(f"call {call_id}")
@@ -374,7 +414,7 @@ def end_call(
     call_id: str,
     body: EndRequest,
 ):
-    require_scope(request, 'calls:write')
+    require_scope(request, "calls:write")
     call = db.calls.get(call_id)
     if not call:
         raise not_found(f"call {call_id}")
@@ -386,6 +426,7 @@ def end_call(
 
 
 # ===== Harness =====
+
 
 @harness.get("/state", tags=["Admin"])
 def harness_state(request: Request):
@@ -466,7 +507,7 @@ def harness_reset(request: Request):
 
 
 @harness.post("/time-travel", tags=["Admin"])
-def harness_time_travel(request: Request, body: dict = Body(default={})):
+def harness_time_travel(request: Request, body: dict = Body(default={})):  # noqa: B008
     require_scope(request, "harness:admin")
     seconds = int(body.get("seconds", 0))
     db.system_clock_offset_sec += seconds
@@ -478,21 +519,31 @@ def harness_time_travel(request: Request, body: dict = Body(default={})):
 _idempotency: dict[str, dict[str, Any]] = {}
 
 
-def _idempotent_check(key: str, endpoint: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+def _idempotent_check(
+    key: str, endpoint: str, payload: dict[str, Any]
+) -> dict[str, Any] | None:
     slot = _idempotency.get(f"{endpoint}:{key}")
     if not slot:
         return None
-    if slot["expires_at"] < datetime.now(timezone.utc):
+    if slot["expires_at"] < datetime.now(UTC):
         _idempotency.pop(f"{endpoint}:{key}", None)
         return None
     if slot["payload_hash"] != hash(json.dumps(payload, sort_keys=True)):
-        raise unprocessable("IDEMPOTENCY_CONFLICT", "Idempotency-Key reused with a different payload.")
+        raise unprocessable(
+            "IDEMPOTENCY_CONFLICT", "Idempotency-Key reused with a different payload."
+        )
     return slot["response"]
 
 
-def _idempotent_store(key: str, endpoint: str, payload: dict[str, Any], status_code: int, response_body: dict[str, Any]) -> None:
+def _idempotent_store(
+    key: str,
+    endpoint: str,
+    payload: dict[str, Any],
+    status_code: int,
+    response_body: dict[str, Any],
+) -> None:
     _idempotency[f"{endpoint}:{key}"] = {
         "payload_hash": hash(json.dumps(payload, sort_keys=True)),
         "response": {"status": status_code, "body": response_body},
-        "expires_at": datetime.now(timezone.utc) + timedelta(hours=24),
+        "expires_at": datetime.now(UTC) + timedelta(hours=24),
     }

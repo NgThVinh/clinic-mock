@@ -6,15 +6,17 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, StringConstraints
 
-
 # ----- shared field types -----
 
 Phone = Annotated[str, StringConstraints(pattern=r"^\+[1-9]\d{7,14}$")]
-IsoDateTime = Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")]
+IsoDateTime = Annotated[
+    str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
+]
 IsoDate = Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 
 
 # ----- patient / slot -----
+
 
 class Patient(BaseModel):
     id: str
@@ -47,10 +49,19 @@ class PatientRef(BaseModel):
 # ----- appointment -----
 
 AppointmentStatus = Literal[
-    "PENDING", "BOOKED", "CONFIRMED", "CANCELLED", "TRANSFERRED", "RESCHEDULED", "COMPLETED", "NO_SHOW"
+    "PENDING",
+    "BOOKED",
+    "CONFIRMED",
+    "CANCELLED",
+    "TRANSFERRED",
+    "RESCHEDULED",
+    "COMPLETED",
+    "NO_SHOW",
 ]
 CancelReason = Literal["PATIENT_NO_SHOW", "PROVIDER_REQUEST", "CLINIC_REBOOK", "OTHER"]
-TransferReason = Literal["EQUIPMENT_FAILURE", "PROVIDER_UNAVAILABLE", "PATIENT_REQUEST", "OTHER"]
+TransferReason = Literal[
+    "EQUIPMENT_FAILURE", "PROVIDER_UNAVAILABLE", "PATIENT_REQUEST", "OTHER"
+]
 
 
 class Appointment(BaseModel):
@@ -83,11 +94,18 @@ class RescheduleRequest(BaseModel):
 # ----- call -----
 
 CallStatus = Literal[
-    "RINGING", "IN_PROGRESS", "ESCALATED",
-    "ENDED_NO_ANSWER", "ENDED_VOICEMAIL", "ENDED_COMPLETED", "ENDED_FAILED",
+    "RINGING",
+    "IN_PROGRESS",
+    "ESCALATED",
+    "ENDED_NO_ANSWER",
+    "ENDED_VOICEMAIL",
+    "ENDED_COMPLETED",
+    "ENDED_FAILED",
 ]
 AttemptKind = Literal["RINGOUT", "VOICEMAIL", "SILENT_TURN"]
-EscalationReason = Literal["TWO_FAILED_UNDERSTANDINGS", "OFF_SCRIPT", "PATIENT_REQUEST", "OTHER"]
+EscalationReason = Literal[
+    "TWO_FAILED_UNDERSTANDINGS", "OFF_SCRIPT", "PATIENT_REQUEST", "OTHER"
+]
 EndOutcome = Literal["COMPLETED", "NO_ANSWER", "VOICEMAIL", "FAILED"]
 
 
@@ -147,6 +165,7 @@ class EndRequest(BaseModel):
 
 
 # ----- pagination envelope -----
+
 
 class Page(BaseModel):
     data: list

@@ -25,7 +25,10 @@ class ApiError(HTTPException):
 
 # Common error factories — one-liners at call sites.
 
-def validation_error(message: str, details: list[dict[str, Any]] | None = None) -> ApiError:
+
+def validation_error(
+    message: str, details: list[dict[str, Any]] | None = None
+) -> ApiError:
     return ApiError(400, "VALIDATION_ERROR", message, details=details)
 
 
@@ -43,7 +46,9 @@ def forbidden(scope: str) -> ApiError:
         403,
         "FORBIDDEN",
         f"Token lacks required scope: {scope}",
-        headers={"WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{scope}"'},
+        headers={
+            "WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{scope}"'
+        },
     )
 
 
@@ -70,13 +75,24 @@ async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
     }
     if exc.details:
         body["error"]["details"] = exc.details
-    return JSONResponse(status_code=exc.status_code, content=body, headers=exc.headers or {})
+    return JSONResponse(
+        status_code=exc.status_code, content=body, headers=exc.headers or {}
+    )
 
 
 async def generic_http_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """Map plain HTTPExceptions (e.g. raised by FastAPI itself) into the envelope."""
     request_id = getattr(request.state, "request_id", None)
-    code_map = {401: "UNAUTHORIZED", 403: "FORBIDDEN", 404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}
+    code_map = {
+        401: "UNAUTHORIZED",
+        403: "FORBIDDEN",
+        404: "NOT_FOUND",
+        405: "METHOD_NOT_ALLOWED",
+    }
     code = code_map.get(exc.status_code, "INTERNAL_ERROR")
-    body = {"error": {"code": code, "message": str(exc.detail), "request_id": request_id}}
-    return JSONResponse(status_code=exc.status_code, content=body, headers=exc.headers or {})
+    body = {
+        "error": {"code": code, "message": str(exc.detail), "request_id": request_id}
+    }
+    return JSONResponse(
+        status_code=exc.status_code, content=body, headers=exc.headers or {}
+    )

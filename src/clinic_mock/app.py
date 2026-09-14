@@ -38,18 +38,31 @@ def create_app() -> FastAPI:
         request.state.request_id = rid
 
         # Public docs endpoints skip auth.
-        if request.url.path in {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}:
+        if request.url.path in {
+            "/openapi.json",
+            "/docs",
+            "/docs/oauth2-redirect",
+            "/redoc",
+        }:
             response = await call_next(request)
             response.headers["X-Request-Id"] = rid
             return response
 
         # 2. Resolve bearer token → Principal (harness routes exempt).
         if not request.url.path.startswith("/_harness"):
-            token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            token = (
+                request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            )
             if not token:
                 return JSONResponse(
                     status_code=401,
-                    content={"error": {"code": "UNAUTHORIZED", "message": "Missing bearer token.", "request_id": rid}},
+                    content={
+                        "error": {
+                            "code": "UNAUTHORIZED",
+                            "message": "Missing bearer token.",
+                            "request_id": rid,
+                        }
+                    },
                     headers={"WWW-Authenticate": 'Bearer realm="clinic-mock"'},
                 )
             try:
@@ -57,14 +70,23 @@ def create_app() -> FastAPI:
             except ValueError:
                 return JSONResponse(
                     status_code=401,
-                    content={"error": {"code": "UNAUTHORIZED", "message": "Invalid bearer token.", "request_id": rid}},
+                    content={
+                        "error": {
+                            "code": "UNAUTHORIZED",
+                            "message": "Invalid bearer token.",
+                            "request_id": rid,
+                        }
+                    },
                     headers={"WWW-Authenticate": 'Bearer realm="clinic-mock"'},
                 )
 
         # Harness admin gets a synthetic principal so test runners don't need a key.
         elif request.url.path.startswith("/_harness"):
             from clinic_mock.auth import Principal
-            request.state.principal = Principal(tenant_id="harness", api_key_last4="0000")
+
+            request.state.principal = Principal(
+                tenant_id="harness", api_key_last4="0000"
+            )
 
         response = await call_next(request)
         response.headers["X-Request-Id"] = rid
@@ -83,7 +105,14 @@ def create_app() -> FastAPI:
         ]
         return JSONResponse(
             status_code=400,
-            content={"error": {"code": "VALIDATION_ERROR", "message": "Request validation failed.", "request_id": rid, "details": details}},
+            content={
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Request validation failed.",
+                    "request_id": rid,
+                    "details": details,
+                }
+            },
         )
 
     app.include_router(v1)

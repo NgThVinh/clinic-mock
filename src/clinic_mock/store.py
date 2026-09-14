@@ -6,13 +6,13 @@ Single global `db` instance; snapshot copies are deep via model_dump.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from clinic_mock.schemas import Appointment, Call, Patient, Slot
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 class Store:
@@ -25,9 +25,9 @@ class Store:
         self.system_clock_offset_sec: int = 0
 
     def now(self) -> datetime:
-        return datetime.now(timezone.utc).fromtimestamp(
-            datetime.now(timezone.utc).timestamp() + self.system_clock_offset_sec,
-            tz=timezone.utc,
+        return datetime.now(UTC).fromtimestamp(
+            datetime.now(UTC).timestamp() + self.system_clock_offset_sec,
+            tz=UTC,
         )
 
     def new_id(self, prefix: str) -> str:
@@ -55,7 +55,9 @@ class Store:
             raise not_found(f"snapshot {sid}")
         self.patients = {k: Patient(**v) for k, v in snap["patients"].items()}
         self.slots = {k: Slot(**v) for k, v in snap["slots"].items()}
-        self.appointments = {k: Appointment(**v) for k, v in snap["appointments"].items()}
+        self.appointments = {
+            k: Appointment(**v) for k, v in snap["appointments"].items()
+        }
         self.calls = {k: Call(**v) for k, v in snap["calls"].items()}
         self.system_clock_offset_sec = snap["system_clock_offset_sec"]
 
@@ -83,13 +85,43 @@ DEFAULT_SEED = {
         {"id": "pr_789", "name": "Dr. Lee", "clinic_id": "c_002"},
     ],
     "patients": [
-        {"id": "p_12345", "first_name": "Jane", "last_name": "Doe", "phone": "+15551234567", "dob": "1985-04-12"},
-        {"id": "p_67890", "first_name": "John", "last_name": "Roe", "phone": "+15559876543", "dob": "1972-11-03"},
+        {
+            "id": "p_12345",
+            "first_name": "Jane",
+            "last_name": "Doe",
+            "phone": "+15551234567",
+            "dob": "1985-04-12",
+        },
+        {
+            "id": "p_67890",
+            "first_name": "John",
+            "last_name": "Roe",
+            "phone": "+15559876543",
+            "dob": "1972-11-03",
+        },
     ],
     "slots": [
-        {"slot_id": "s_987", "clinic_id": "c_001", "start_time": "2026-09-15T09:00:00Z", "end_time": "2026-09-15T09:30:00Z", "provider_id": "pr_456"},
-        {"slot_id": "s_988", "clinic_id": "c_001", "start_time": "2026-09-15T09:30:00Z", "end_time": "2026-09-15T10:00:00Z", "provider_id": "pr_456"},
-        {"slot_id": "s_1024", "clinic_id": "c_002", "start_time": "2026-09-15T11:00:00Z", "end_time": "2026-09-15T11:30:00Z", "provider_id": "pr_789"},
+        {
+            "slot_id": "s_987",
+            "clinic_id": "c_001",
+            "start_time": "2026-09-15T09:00:00Z",
+            "end_time": "2026-09-15T09:30:00Z",
+            "provider_id": "pr_456",
+        },
+        {
+            "slot_id": "s_988",
+            "clinic_id": "c_001",
+            "start_time": "2026-09-15T09:30:00Z",
+            "end_time": "2026-09-15T10:00:00Z",
+            "provider_id": "pr_456",
+        },
+        {
+            "slot_id": "s_1024",
+            "clinic_id": "c_002",
+            "start_time": "2026-09-15T11:00:00Z",
+            "end_time": "2026-09-15T11:30:00Z",
+            "provider_id": "pr_789",
+        },
     ],
 }
 

@@ -17,15 +17,19 @@ from functools import lru_cache
 
 from clinic_mock.config import settings
 
-
 KEY_PREFIX = "sk-"
 
-ALL_SCOPES = frozenset({
-    "patients:read", "slots:read",
-    "appointments:read", "appointments:write",
-    "calls:read", "calls:write",
-    "harness:admin",
-})
+ALL_SCOPES = frozenset(
+    {
+        "patients:read",
+        "slots:read",
+        "appointments:read",
+        "appointments:write",
+        "calls:read",
+        "calls:write",
+        "harness:admin",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -33,7 +37,7 @@ class Principal:
     tenant_id: str
     api_key_last4: str
 
-    def has(self, scope: str) -> bool:  # noqa: ARG002 — contract fidelity; mock grants all
+    def has(self, scope: str) -> bool:
         return True
 
 
@@ -72,7 +76,7 @@ def parse_bearer(token: str) -> Principal:
     return Principal(tenant_id=tenant_id, api_key_last4=token[-4:])
 
 
-def require_scope(request, scope: str) -> Principal:  # noqa: ARG001 — scope kept for contract fidelity
+def require_scope(request, scope: str) -> Principal:
     principal: Principal | None = getattr(request.state, "principal", None)
     if principal is None:
         from clinic_mock.errors import unauthorized

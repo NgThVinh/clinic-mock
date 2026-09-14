@@ -10,7 +10,11 @@ def setup_logging() -> None:
     if settings.log.JSON_LOGS:
         logger.add(sys.stdout, level=settings.log.LEVEL, serialize=True)
     else:
-        logger.add(sys.stdout, level=settings.log.LEVEL, format="<level>{level: <8}</level> | {name}:{function} - <level>{message}</level>")
+        logger.add(
+            sys.stdout,
+            level=settings.log.LEVEL,
+            format="<level>{level: <8}</level> | {name}:{function} - <level>{message}</level>",
+        )
 
 
 setup_logging()

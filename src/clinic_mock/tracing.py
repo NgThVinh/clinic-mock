@@ -28,7 +28,7 @@ def setup_tracing() -> None:
 
     try:
         # Langfuse SDK wires its exporter into the global OTel TracerProvider.
-        from langfuse import Langfuse  # noqa: F401
+        from langfuse import Langfuse
 
         Langfuse(environment=settings.langfuse.ENVIRONMENT)
 
