@@ -79,6 +79,12 @@ def paginate(
 
 v1 = APIRouter(prefix="/v1")
 harness = APIRouter(prefix="/_harness")
+health = APIRouter(tags=["Health"])
+
+
+@health.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok"}
 
 
 # ===== Discovery =====

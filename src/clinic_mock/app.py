@@ -3,13 +3,14 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
 from clinic_mock.auth import parse_bearer
 from clinic_mock.config import settings
 from clinic_mock.errors import ApiError, api_error_handler
 from clinic_mock.logger import logger
-from clinic_mock.routes import harness, v1
+from clinic_mock.routes import harness, health, v1
 from clinic_mock.store import seed_default
 from clinic_mock.tracing import instrument_app, setup_tracing
 
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
             "/docs",
             "/docs/oauth2-redirect",
             "/redoc",
+            "/health",
         }:
             response = await call_next(request)
             response.headers["X-Request-Id"] = rid
@@ -117,6 +119,29 @@ def create_app() -> FastAPI:
 
     app.include_router(v1)
     app.include_router(harness)
+    app.include_router(health)
+
+    # Expose Bearer auth in Swagger UI so the "Authorize" button appears.
+    # Auth itself runs in middleware above — this is purely a docs hint.
+    def _custom_openapi():
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            routes=app.routes,
+        )
+        schema.setdefault("components", {})["securitySchemes"] = {
+            "BearerAuth": {"type": "http", "scheme": "bearer"}
+        }
+        # Global security so Swagger's Authorize button actually attaches the
+        # header to every "Try it out" call. Middleware still enforces auth on
+        # non-public paths regardless of this hint.
+        schema["security"] = [{"BearerAuth": []}]
+        app.openapi_schema = schema
+        return app.openapi_schema
+
+    app.openapi = _custom_openapi
 
     instrument_app(app)
     return app

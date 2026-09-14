@@ -2,7 +2,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AppSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="APP_", env_file=".env", extra="ignore"
+    )
 
     PROJECT_NAME: str = "clinic-mock"
     VERSION: str = "0.1.0"
@@ -12,7 +14,9 @@ class AppSettings(BaseSettings):
 
 
 class LogSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="LOG_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="LOG_", env_file=".env", extra="ignore"
+    )
 
     LEVEL: str = "INFO"
     JSON_LOGS: bool = False
@@ -39,7 +43,9 @@ class MockAuthSettings(BaseSettings):
     the mock is usable out-of-the-box without env tweaks.
     """
 
-    model_config = SettingsConfigDict(env_prefix="MOCK_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="MOCK_", env_file=".env", extra="ignore"
+    )
 
     API_KEYS: str = "tenant_demo:sk-dev-demo"
 
