@@ -43,19 +43,34 @@ This document is the authoritative human-readable contract; the companion [`open
 
 ## 2. Authentication
 
-All endpoints under `/v1/...`, except `/_harness/*`, require a bearer API key.
+The mock uses **mock-grade bearer-token auth**: a single API key per tenant, no JWT, no signature, no per-scope grants. Every valid key has full access to its tenant. A real implementation would validate HS256 signatures against an IDP — out of scope for this mock.
+
+### 2.1 Request
+
+All endpoints under `/v1/...` require a bearer token. `/_harness/*`, `/health`, and the docs endpoints (`/docs`, `/openapi.json`, `/redoc`) skip auth.
 
 ```
 Authorization: Bearer <api_key>
 ```
 
-* API keys are issued per tenant.
-* `401 UNAUTHORIZED` if the key is missing, malformed, revoked, or expired. Response carries `WWW-Authenticate: Bearer`.
-* `403 FORBIDDEN` if the key is valid but lacks the required scope. Response carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"`.
+* `<api_key>` must start with the prefix `sk-`.
+* Keys are registered via the `MOCK_API_KEYS` env var as a comma-separated list of `tenant_id:sk-xxx` entries.
+* No expiration, no rotation, no revocation — a key is valid for as long as it is present in `MOCK_API_KEYS` and is removed only by editing the env.
+* The default seed is `tenant_demo:sk-dev-demo` so the mock is usable out-of-the-box.
 
-### Scopes
+### 2.2 Failure Modes
 
-| Scope | Grants |
+| HTTP | Code | When | Response Header |
+| :---: | :--- | :--- | :--- |
+| `401` | `UNAUTHORIZED` | Token missing, malformed (no `sk-` prefix), or unknown to `MOCK_API_KEYS`. | `WWW-Authenticate: Bearer realm="clinic-mock"` |
+
+`403 FORBIDDEN` is **defined** for the future case of per-scope grants, but the mock does not currently enforce per-scope checks — every valid key passes every scope guard, so `403` is unreachable today.
+
+### 2.3 Scopes (declared, not enforced)
+
+These scopes are the conceptual access boundaries the mock uses to label endpoints. They are **not enforced** at runtime — `require_scope(...)` only verifies that a valid key was presented, not which scopes the key carries.
+
+| Scope | Endpoint Group |
 | :--- | :--- |
 | `patients:read` | `GET /patients` |
 | `slots:read` | `GET /slots` |
@@ -63,7 +78,15 @@ Authorization: Bearer <api_key>
 | `appointments:write` | `POST /appointments` and all `POST /appointments/{id}/...` |
 | `calls:read` | `GET /calls`, `GET /calls/{id}` |
 | `calls:write` | `POST /calls`, `PATCH /calls/{id}`, `POST /calls/{id}/escalate`, `POST /calls/{id}/attempts`, `POST /calls/{id}/end` |
-| `harness:admin` | `GET` and `POST` under `/_harness/*` |
+| `harness:admin` | `GET` and `POST` under `/_harness/*` (auth-exempt; synthetic principal auto-assigned) |
+
+### 2.4 Operator Configuration
+
+| Env Var | Required | Description |
+| :--- | :--- | :--- |
+| `MOCK_API_KEYS` | yes for multi-tenant testing | Comma-separated `tenant_id:sk-xxx` entries. Default: `tenant_demo:sk-dev-demo`. |
+
+Entries that lack the `sk-` prefix or the `tenant:key` shape are silently dropped — typos in env should not crash the mock.
 
 ## 3. Versioning
 
@@ -101,8 +124,8 @@ Versions travel in the URL (`/v1`) **and** in the `Accept-Version` header.
 | :---: | :--- | :--- | :--- |
 | 400 | `VALIDATION_ERROR` | Request failed schema/format validation. | `details[]` names offending fields. |
 | 400 | `INVALID_ESCALATION_TARGET` | Escalate called without `staff_id` or `queue`. | `POST /calls/{id}/escalate`. |
-| 401 | `UNAUTHORIZED` | Missing, malformed, or revoked bearer token. | Carries `WWW-Authenticate: Bearer`. |
-| 403 | `FORBIDDEN` | Token valid but lacks required scope. | Carries `WWW-Authenticate: Bearer error="insufficient_scope"`. |
+| 401 | `UNAUTHORIZED` | Missing, malformed, or unknown bearer token. | Carries `WWW-Authenticate: Bearer realm="clinic-mock"`. |
+| 403 | `FORBIDDEN` | Defined for the future case of per-scope grants; **unreachable in the current mock** (every valid key passes every scope guard). | Carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` when eventually wired. |
 | 404 | `NOT_FOUND` | Resource does not exist or is not visible to the caller. | |
 | 406 | `UNSUPPORTED_VERSION` | `Accept-Version` unknown or past sunset. | |
 | 409 | `SLOT_TAKEN` | The referenced `slot_id` is already reserved. | `POST /appointments`. |
@@ -118,7 +141,7 @@ Versions travel in the URL (`/v1`) **and** in the `Accept-Version` header.
 
 | Field | Rule |
 | :--- | :--- |
-| `phone`, `Patient.phone`, `from_number`, `to_number` | E.164: `^\+[1-9]\d{7,14}$` |
+| `phone`, `Patient.phone`, `from_number`, `to_number` | VN local 10-digit, mobile or landline: `` `^(02\|03\|05\|07\|08\|09)\d{8}$` `` |
 | `from`, `to` | RFC 3339 UTC (`...Z`). `to > from`. |
 | `from`/`to` window | ≤ 14 days. |
 | `date` | `YYYY-MM-DD`. |

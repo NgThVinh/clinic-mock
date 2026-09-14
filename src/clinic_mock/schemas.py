@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 # ----- shared field types -----
 
-Phone = Annotated[str, StringConstraints(pattern=r"^\+[1-9]\d{7,14}$")]
+Phone = Annotated[str, StringConstraints(pattern=r"^(03|05|07|08|09)\d{8}$")]
 IsoDateTime = Annotated[
     str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 ]

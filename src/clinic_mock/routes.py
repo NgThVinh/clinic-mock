@@ -93,7 +93,7 @@ def health_check() -> dict[str, str]:
 @v1.get("/patients", tags=["Discovery"])
 def find_patients(
     request: Request,
-    phone: Annotated[str, Query(pattern=r"^\+[1-9]\d{7,14}$")],
+    phone: Annotated[str, Query(pattern=r"^(02|03|05|07|08|09)\d{8}$")],
     cursor: str | None = None,
     limit: int = 25,
 ):

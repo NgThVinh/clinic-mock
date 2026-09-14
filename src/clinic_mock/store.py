@@ -77,26 +77,26 @@ db = Store()
 
 DEFAULT_SEED = {
     "clinics": [
-        {"id": "c_001", "name": "Downtown Clinic"},
-        {"id": "c_002", "name": "Uptown Clinic"},
+        {"id": "c_001", "name": "Phòng khám Đa khoa Trung tâm"},
+        {"id": "c_002", "name": "Phòng khám Đa khoa Cầu Giấy"},
     ],
     "providers": [
-        {"id": "pr_456", "name": "Dr. Smith", "clinic_id": "c_001"},
-        {"id": "pr_789", "name": "Dr. Lee", "clinic_id": "c_002"},
+        {"id": "pr_456", "name": "Bác sĩ Nguyễn Văn An", "clinic_id": "c_001"},
+        {"id": "pr_789", "name": "Bác sĩ Trần Thị Bình", "clinic_id": "c_002"},
     ],
     "patients": [
         {
             "id": "p_12345",
-            "first_name": "Jane",
-            "last_name": "Doe",
-            "phone": "+15551234567",
+            "first_name": "Mai",
+            "last_name": "Nguyễn Thị",
+            "phone": "0912345678",
             "dob": "1985-04-12",
         },
         {
             "id": "p_67890",
-            "first_name": "John",
-            "last_name": "Roe",
-            "phone": "+15559876543",
+            "first_name": "Nam",
+            "last_name": "Trần Văn",
+            "phone": "0987654321",
             "dob": "1972-11-03",
         },
     ],
