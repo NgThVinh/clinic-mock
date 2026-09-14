@@ -110,7 +110,7 @@ Versions travel in the URL (`/v1`) **and** in the `Accept-Version` header.
 
 ## 6. Rate Limiting
 
-(same as before — `X-RateLimit-*` headers, `429 RATE_LIMITED`)
+**Not implemented in the current mock.** No request ever returns `429`, no `X-RateLimit-*` header is emitted, and no rate-limit middleware exists. This section reserves the contract: when implementation lands it will emit `X-RateLimit-{Limit,Remaining,Reset}` on every response and `Retry-After` on `429`. The `RateLimited` response component in `openapi.yaml` is documented-but-unused for the same reason.
 
 ## 7. Errors
 
@@ -133,7 +133,7 @@ Versions travel in the URL (`/v1`) **and** in the `Accept-Version` header.
 | 409 | `INVALID_STATE_TRANSITION` | Action not allowed from the current appointment status. | Lifecycle endpoints on terminal or incompatible states. |
 | 409 | `CALL_ALREADY_ENDED` | Write attempted against a terminal-state `Call`. | `PATCH /calls/{id}` and any `POST /calls/{id}/...` against `ESCALATED` or `ENDED_*`. |
 | 422 | `IDEMPOTENCY_CONFLICT` | Same `Idempotency-Key` reused with a different payload. | See [Idempotency](#8-idempotency). |
-| 429 | `RATE_LIMITED` | Per-tenant quota exceeded. | Carries `Retry-After`. |
+| 429 | `RATE_LIMITED` | Reserved for future per-tenant rate limiting; **not currently returned** by the mock. | When implemented, will carry `Retry-After` and `X-RateLimit-*` headers. |
 | 500 | `INTERNAL_ERROR` | Unexpected server failure. | Safe to retry with exponential backoff and jitter. |
 | 503 | `SERVICE_UNAVAILABLE` | Temporary outage; safe to retry. | Carries `Retry-After`. |
 
@@ -429,7 +429,9 @@ Endpoints for admins and automated test suites. **Never expose to end users.** R
 
 ## 13. Webhooks
 
-The platform pushes lifecycle events to a tenant-configured HTTPS URL. Delivery is **at-least-once** with exponential backoff (1s, 5s, 30s, 5m, 30m, 2h, 12h, 24h — 8 attempts).
+**Not implemented in the current mock.** The event shapes below are pinned here for the future emitter; no webhook is actually delivered today (no client, no delivery worker, no retries). The `webhooks:` block in `openapi.yaml` is declared-but-unused for the same reason.
+
+When the emitter lands: the platform pushes lifecycle events to a tenant-configured HTTPS URL. Delivery is **at-least-once** with exponential backoff (1s, 5s, 30s, 5m, 30m, 2h, 12h, 24h — 8 attempts).
 
 ### 13.1 Headers on Every Delivery
 

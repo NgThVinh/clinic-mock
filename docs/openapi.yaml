@@ -26,8 +26,27 @@ tags:
     description: Voice-agent call lifecycle (start, identity state, escalate, attempts, end).
   - name: Admin
     description: Sandbox/admin harness endpoints. Requires harness:admin scope.
+  - name: Health
+    description: Liveness probe. No auth required.
 
 paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: healthCheck
+      summary: Liveness probe.
+      security: []
+      responses:
+        '200':
+          description: Service is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                required: [status]
+
   /patients:
     get:
       tags: [Discovery]
@@ -41,7 +60,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^\+[1-9]\d{7,14}$'
+            pattern: '^(02|03|05|07|08|09)\d{8}$'
       responses:
         '200':
           description: Paginated list of patients.
@@ -51,7 +70,6 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '429': { $ref: '#/components/responses/RateLimited' }
 
   /slots:
     get:
@@ -98,7 +116,6 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/IdempotencyConflict' }
-        '429': { $ref: '#/components/responses/RateLimited' }
     get:
       tags: [Appointments]
       operationId: listAppointmentsByDay
@@ -117,9 +134,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AppointmentPage' }
 
-  /appointments/{id}:
+  /appointments/{appt_id}:
     parameters:
-      - { in: path, name: id, required: true, schema: { type: string } }
+      - { in: path, name: appt_id, required: true, schema: { type: string } }
     get:
       tags: [Appointments]
       operationId: getAppointment
@@ -134,14 +151,14 @@ paths:
               schema: { $ref: '#/components/schemas/Appointment' }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  /appointments/{id}/confirm:
+  /appointments/{appt_id}/confirm:
     post:
       tags: [Appointments]
       operationId: confirmAppointment
       security:
         - bearerAuth: [appointments:write]
       parameters:
-        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: appt_id, required: true, schema: { type: string } }
       responses:
         '200':
           description: Updated appointment.
@@ -150,14 +167,14 @@ paths:
               schema: { $ref: '#/components/schemas/Appointment' }
         '409': { $ref: '#/components/responses/Conflict' }
 
-  /appointments/{id}/cancel:
+  /appointments/{appt_id}/cancel:
     post:
       tags: [Appointments]
       operationId: cancelAppointment
       security:
         - bearerAuth: [appointments:write]
       parameters:
-        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: appt_id, required: true, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -172,14 +189,14 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '409': { $ref: '#/components/responses/Conflict' }
 
-  /appointments/{id}/transfer:
+  /appointments/{appt_id}/transfer:
     post:
       tags: [Appointments]
       operationId: transferAppointment
       security:
         - bearerAuth: [appointments:write]
       parameters:
-        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: appt_id, required: true, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -194,14 +211,14 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '409': { $ref: '#/components/responses/Conflict' }
 
-  /appointments/{id}/reschedule:
+  /appointments/{appt_id}/reschedule:
     post:
       tags: [Appointments]
       operationId: rescheduleAppointment
       security:
         - bearerAuth: [appointments:write]
       parameters:
-        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: appt_id, required: true, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -239,11 +256,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Call' }
         '400': { $ref: '#/components/responses/ValidationError' }
-        '429': { $ref: '#/components/responses/RateLimited' }
 
-  /calls/{id}:
+  /calls/{call_id}:
     parameters:
-      - { in: path, name: id, required: true, schema: { type: string } }
+      - { in: path, name: call_id, required: true, schema: { type: string } }
     get:
       tags: [Calls]
       operationId: getCall
@@ -278,7 +294,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
-  /calls/{id}/escalate:
+  /calls/{call_id}/escalate:
     post:
       tags: [Calls]
       operationId: escalateCall
@@ -289,7 +305,7 @@ paths:
       security:
         - bearerAuth: [calls:write]
       parameters:
-        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: call_id, required: true, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -309,7 +325,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
-  /calls/{id}/attempts:
+  /calls/{call_id}/attempts:
     post:
       tags: [Calls]
       operationId: logCallAttempt
@@ -317,7 +333,7 @@ paths:
       security:
         - bearerAuth: [calls:write]
       parameters:
-        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: call_id, required: true, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -333,7 +349,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
-  /calls/{id}/end:
+  /calls/{call_id}/end:
     post:
       tags: [Calls]
       operationId: endCall
@@ -341,7 +357,7 @@ paths:
       security:
         - bearerAuth: [calls:write]
       parameters:
-        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: call_id, required: true, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -441,9 +457,9 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Call' }
 
-  /_harness/calls/{id}:
+  /_harness/calls/{call_id}:
     parameters:
-      - { in: path, name: id, required: true, schema: { type: string } }
+      - { in: path, name: call_id, required: true, schema: { type: string } }
     get:
       tags: [Admin]
       operationId: harnessGetCall
@@ -491,9 +507,9 @@ paths:
                   snapshot_id: { type: string }
                   captured_at: { type: string, format: date-time }
 
-  /_harness/snapshot/{id}/restore:
+  /_harness/snapshot/{sid}/restore:
     parameters:
-      - { in: path, name: id, required: true, schema: { type: string } }
+      - { in: path, name: sid, required: true, schema: { type: string } }
     post:
       tags: [Admin]
       operationId: harnessRestoreSnapshot
@@ -548,6 +564,10 @@ paths:
         '200': { description: Clock advanced. }
 
 webhooks:
+  # NOTE: Outgoing event shapes are pinned here for future emitters.
+  # The current mock does NOT deliver webhooks — these are declared,
+  # not sent. See APIs.md §13 for status.
+  # Delete this block when the emitter lands.
   appointmentCreated:
     post:
       summary: appointment.created
@@ -684,7 +704,9 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     RateLimited:
-      description: Rate limit exceeded.
+      description: |
+        Reserved for future per-tenant rate limiting.
+        **Not currently returned by the mock** — see APIs.md §6.
       headers:
         Retry-After:
           schema: { type: integer }

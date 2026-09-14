@@ -27,6 +27,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM python:3.13-slim AS runtime
 
+# Create non-root user before any file copies so we can chown cleanly.
+RUN useradd --create-home --shell /bin/bash --uid 10001 appuser
+
 # Carry the resolved venv and uv into the runtime image.
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /bin/uv /bin/uvx /bin/
@@ -36,10 +39,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
-COPY src ./src
+COPY --chown=appuser:appuser src ./src
 
 EXPOSE 8000
 
 # Run the installed `prod` script (entry point from pyproject.toml).
 # Same as `uv run prod` — uses the venv and respects settings.app.HOST/PORT.
+USER appuser
 CMD ["uv", "run", "prod"]
