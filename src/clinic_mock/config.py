@@ -35,19 +35,19 @@ class LangfuseSettings(BaseSettings):
 
 
 class MockAuthSettings(BaseSettings):
-    """Env-driven tenant/API-key registry.
+    """Env-driven API-key registry.
 
-    `API_KEYS` is a comma-separated list of `tenant_id:sk_xxx` entries.
-    Each api_key must start with `sk_` and resolves to its tenant.
-    Default seeds one tenant (`tenant_demo`) with key `sk_dev_demo` so
-    the mock is usable out-of-the-box without env tweaks.
+    `API_KEYS` is a comma-separated list of API keys. Each key starts with
+    `sk_` and resolves to one `tenant_id`, either explicit (`tenant:key`)
+    or auto-derived from the key hash. Default seeds one key for a usable
+    out-of-the-box experience.
     """
 
     model_config = SettingsConfigDict(
         env_prefix="MOCK_", env_file=".env", extra="ignore"
     )
 
-    API_KEYS: str = "tenant_demo:sk_dev_demo"
+    API_KEYS: str = "sk_dev_demo"
 
 
 class Settings:

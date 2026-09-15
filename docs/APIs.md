@@ -30,7 +30,7 @@ This document is the authoritative human-readable contract; the companion [`open
 | `Authorization` | yes (except `/health`, `/docs`, `/openapi.json`, `/redoc`) | `Bearer <api_key>` — see [Authentication](#2-authentication). |
 | `Content-Type` | on requests with a body | Must be `application/json; charset=utf-8`. |
 | `Accept-Version` | recommended | API version; defaults to `v1` if absent — see [Versioning](#3-versioning). |
-| `Idempotency-Key` | recommended on `POST` | Stable per-tenant key for safe replays — see [Idempotency](#8-idempotency). |
+| `Idempotency-Key` | recommended on `POST` | Stable per-key key for safe replays — see [Idempotency](#8-idempotency). |
 | `X-Request-Id` | recommended | Client-supplied correlation id (UUIDv4). Echoed in the response, error envelope, and emitted as the `langfuse.request.id` attribute on every trace. |
 
 ### 1.2 Response Headers (every response)
@@ -41,9 +41,9 @@ This document is the authoritative human-readable contract; the companion [`open
 | `X-Request-Id` | Server-issued if the client omitted one. |
 | `X-RateLimit-*` | Current bucket state — see [Rate Limiting](#6-rate-limiting). |
 
-## 2. Authentication & Tenant Isolation
+## 2. Authentication & Data Isolation
 
-The mock uses **mock-grade bearer-token auth**: a single API key per tenant, no JWT, no signature, no per-scope grants. Every valid key has full access to its tenant and only its tenant. A real implementation would validate HS256 signatures against an IDP — out of scope for this mock.
+The mock uses **mock-grade bearer-token auth**: a single API key per caller, no JWT, no signature, no per-scope grants. Every valid key has full access to its own data and no other caller's data. A real implementation would validate HS256 signatures against an IDP — out of scope for this mock.
 
 ### 2.1 Request
 
@@ -54,32 +54,32 @@ Authorization: Bearer <api_key>
 ```
 
 * `<api_key>` must start with the prefix `sk_`.
-* Keys are registered via the `MOCK_API_KEYS` env var as a comma-separated list of `tenant_id:sk_xxx` entries.
-* The key resolves to exactly one `tenant_id`; every read and mutation in the request is scoped to that tenant.
+* Keys are registered via the `MOCK_API_KEYS` env var as a comma-separated list (`sk_xxx,sk_yyy,…`). Each key is automatically scoped to its own isolated data; no manual scoping required.
+* The legacy explicit form (`scope:sk_xxx`) is still accepted if a human-readable scope label is needed.
 * No expiration, no rotation, no revocation — a key is valid for as long as it is present in `MOCK_API_KEYS` and is removed only by editing the env.
 
-### 2.2 Tenant Isolation Guarantees
+### 2.2 Isolation Guarantees
 
-* A caller **cannot list, read, or mutate another tenant's data**. Cross-tenant access is hidden, not forbidden — see §2.3.
-* The `tenant_id` is **never returned in response payloads**. It exists server-side only to scope queries and is marked `exclude=True` on every response model.
-* `/_harness/*` is **per-tenant**, not global. Each key sees only the patients, slots, appointments, calls, and escalations belonging to its own tenant — even via `/state`.
+* A caller **cannot list, read, or mutate another caller's data**. Cross-key access is hidden, not forbidden — see §2.3.
+* The internal isolation scope is **never returned in response payloads**. It exists server-side only and is marked `exclude=True` on every response model.
+* `/_harness/*` is **per-key**, not global. Each key sees only its own patients, slots, appointments, calls, and escalations — even via `/state`.
 
 ### 2.3 Failure Modes
 
 | HTTP | Code | When | Response Header |
 | :---: | :--- | :--- | :--- |
 | `401` | `UNAUTHORIZED` | Token missing, malformed (no `sk_` prefix), or unknown to `MOCK_API_KEYS`. | `WWW-Authenticate: Bearer realm="clinic-mock"` |
-| `404` | `NOT_FOUND` | Resource exists but belongs to another tenant (existence is hidden, never `403`). | — |
+| `404` | `NOT_FOUND` | Resource exists but belongs to another caller (existence is hidden, never `403`). | — |
 
-`403 FORBIDDEN` is **defined** for the future case of per-scope grants, but the mock does not currently enforce per-scope checks — every valid key has full access to its tenant, so `403` is unreachable today.
+`403 FORBIDDEN` is **defined** for the future case of per-scope grants, but the mock does not currently enforce per-scope checks — every valid key has full access to its own data, so `403` is unreachable today.
 
 ### 2.4 Operator Configuration
 
 | Env Var | Required | Description |
 | :--- | :--- | :--- |
-| `MOCK_API_KEYS` | yes for multi-tenant testing | Comma-separated `tenant_id:sk_xxx` entries. |
+| `MOCK_API_KEYS` | yes for multi-caller testing | Comma-separated `sk_xxx` keys. Each key is auto-isolated (or labelled explicitly via the legacy `scope:sk_xxx` form). |
 
-Entries that lack the `sk_` prefix or the `tenant:key` shape are silently dropped — typos in env should not crash the mock.
+Entries that lack the `sk_` prefix are silently dropped — typos in env should not crash the mock.
 
 ## 3. Versioning
 
@@ -95,7 +95,7 @@ Versions travel in the URL (`/v1`) **and** in the `Accept-Version` header.
 | :--- | :--- | :--- |
 | Production | `https://api.clinic.example/v1` | Real patient data. |
 | Sandbox | `https://sandbox.api.clinic.example/v1` | Synthetic data; identical contract. |
-| Harness (per-tenant) | `https://{api,sandbox}.clinic.example/_harness/*` | Requires a bearer key; scoped to the caller's tenant; **never expose to end users**. |
+| Harness (per-key) | `https://{api,sandbox}.clinic.example/_harness/*` | Requires a bearer key; scoped to the caller's data; **never expose to end users**. |
 
 ## 5. Pagination
 
@@ -126,7 +126,7 @@ Versions travel in the URL (`/v1`) **and** in the `Accept-Version` header.
 | 409 | `INVALID_STATE_TRANSITION` | Action not allowed from the current appointment status. | Lifecycle endpoints on terminal or incompatible states. |
 | 409 | `CALL_ALREADY_ENDED` | Write attempted against a terminal-state `Call`. | `PATCH /calls/{id}` and any `POST /calls/{id}/...` against `ESCALATED` or `ENDED_*`. |
 | 422 | `IDEMPOTENCY_CONFLICT` | Same `Idempotency-Key` reused with a different payload. | See [Idempotency](#8-idempotency). |
-| 429 | `RATE_LIMITED` | Reserved for future per-tenant rate limiting; **not currently returned** by the mock. | When implemented, will carry `Retry-After` and `X-RateLimit-*` headers. |
+| 429 | `RATE_LIMITED` | Reserved for future per-key rate limiting; **not currently returned** by the mock. | When implemented, will carry `Retry-After` and `X-RateLimit-*` headers. |
 | 500 | `INTERNAL_ERROR` | Unexpected server failure. | Safe to retry with exponential backoff and jitter. |
 | 503 | `SERVICE_UNAVAILABLE` | Temporary outage; safe to retry. | Carries `Retry-After`. |
 
@@ -192,9 +192,8 @@ Versions travel in the URL (`/v1`) **and** in the `Accept-Version` header.
 ```json
 {
   "id": "call_01HZ...",
-  "tenant_id": "tenant_123",
-  "from_number": "+15551234567",
-  "to_number": "+15559876543",
+  "from_number": "0912345678",
+  "to_number": "0987654321",
   "started_at": "2026-09-15T09:00:00Z",
   "ended_at": null,
   "status": "IN_PROGRESS",
@@ -391,7 +390,7 @@ Ends the call.
 
 ### Admin & Operations
 
-Endpoints for admins and automated test suites. **Never expose to end users.** Require a bearer key and are scoped to the caller's tenant (each key sees only its own data, even via `/state`).
+Endpoints for admins and automated test suites. **Never expose to end users.** Require a bearer key and are scoped to the caller's data (each key sees only its own data, even via `/state`).
 
 **State inspection (read-only):**
 
@@ -401,7 +400,7 @@ Endpoints for admins and automated test suites. **Never expose to end users.** R
 | `GET` | `/_harness/patients` | Filtered list of seeded patients. |
 | `GET` | `/_harness/slots` | Filtered list of slots (with optional `clinic_id`, `from`, `to`). |
 | `GET` | `/_harness/appointments` | Filtered list (with optional `clinic_id`, `date`, `status`). |
-| `GET` | `/_harness/calls` | Filtered list of calls (with optional `status`, `tenant_id`). |
+| `GET` | `/_harness/calls` | Filtered list of calls (with optional `status`). |
 | `GET` | `/_harness/calls/{id}` | Single call with `attempts`, `escalations`, and `linked_appointment_ids`. |
 | `GET` | `/_harness/escalations` | All escalations across all calls, ordered by `at` desc. |
 
@@ -424,7 +423,7 @@ Endpoints for admins and automated test suites. **Never expose to end users.** R
 
 **Not implemented in the current mock.** The event shapes below are pinned here for the future emitter; no webhook is actually delivered today (no client, no delivery worker, no retries). The `webhooks:` block in `openapi.yaml` is declared-but-unused for the same reason.
 
-When the emitter lands: the platform pushes lifecycle events to a tenant-configured HTTPS URL. Delivery is **at-least-once** with exponential backoff (1s, 5s, 30s, 5m, 30m, 2h, 12h, 24h — 8 attempts).
+When the emitter lands: the platform pushes lifecycle events to a per-caller-configured HTTPS URL. Delivery is **at-least-once** with exponential backoff (1s, 5s, 30s, 5m, 30m, 2h, 12h, 24h — 8 attempts).
 
 ### 13.1 Headers on Every Delivery
 
@@ -456,8 +455,7 @@ Each event body is the canonical resource plus a top-level `event` field:
   "event": {
     "name": "appointment.confirmed",
     "id": "evt_01HZ...",
-    "occurred_at": "2026-09-15T09:05:22Z",
-    "tenant_id": "tenant_123"
+    "occurred_at": "2026-09-15T09:05:22Z"
   },
   "appointment": { "...": "Appointment" }
 }
@@ -503,7 +501,7 @@ When `LANGFUSE_TRACES_ENABLED=false`, traces are dropped — not buffered on the
 | `http.route` | Resolved route pattern |
 | `http.response.status_code` | Response status |
 | `server.latency_ms` | Measured on the server |
-| `langfuse.tenant.id` | Resolved from API key |
+| `langfuse.caller.id` | Resolved from API key |
 | `langfuse.request.id` | Matches `X-Request-Id` (correlation key) |
 | `langfuse.api_key.last4` | Last four of the bearer key (sanitized) |
 
