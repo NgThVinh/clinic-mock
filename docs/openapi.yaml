@@ -1,11 +1,15 @@
 openapi: 3.1.0
 info:
   title: Clinic Platform API
-  version: '1.1.0'
-  summary: Public appointment-booking API plus voice-call lifecycle API.
+  version: '2.0.0'
+  summary: AI-callbot clinic mock — appointment and discovery endpoints per the AI Health Residency product contract (Rev 1.0).
   description: |
     Authoritative human-readable spec: ../docs/APIs.md.
     This file is the machine-readable companion and is the source of truth for client tooling.
+
+    Surface matches contract §4.2 — `GET /patients`, `GET /slots`, `POST /appointments`,
+    `GET /appointments/{id}`, `GET /appointments`, `POST /appointments/{id}/{confirm|cancel|transfer|reschedule|unreachable}`.
+    The /v1/calls/* endpoints (bot-side per §4.1) are intentionally absent.
   contact:
     email: api-support@clinic.example
   license:
@@ -22,10 +26,8 @@ tags:
     description: Patient and slot lookup.
   - name: Appointments
     description: Booking, reading, and lifecycle management.
-  - name: Calls
-    description: Voice-agent call lifecycle (start, identity state, escalate, attempts, end).
   - name: Admin
-    description: Tenant-scoped sandbox/admin harness endpoints. Requires a bearer key.
+    description: Tenant-scoped scoring-harness endpoints. Requires a bearer key.
   - name: Health
     description: Liveness probe. No auth required.
 
@@ -47,11 +49,11 @@ paths:
                   status: { type: string, example: ok }
                 required: [status]
 
-  /patients:
+  /v1/patients:
     get:
       tags: [Discovery]
       operationId: findPatients
-      summary: Find patients by phone.
+      summary: Find patients by phone (used for inbound identity verification).
       security:
         - bearerAuth: []
       parameters:
@@ -61,20 +63,29 @@ paths:
           schema:
             type: string
             pattern: '^(02|03|05|07|08|09)\d{8}$'
+        - in: query
+          name: cursor
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
       responses:
         '200':
-          description: Paginated list of patients.
+          description: Paginated list of patients matching the phone.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PatientPage' }
-        '400': { $ref: '#/components/responses/ValidationError' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/BadKey' }
 
-  /slots:
+  /v1/slots:
     get:
       tags: [Discovery]
       operationId: listOpenSlots
-      summary: List open, bookable slots.
+      summary: List genuinely open, bookable slots for a clinic in a time window.
+      description: |
+        This is the **only** legal source for presenting availability to a caller (contract §1.1.6).
+        Times are RFC 3339 with either `Z` or `±HH:MM` offset (Listing 3 uses `+07:00`).
       security:
         - bearerAuth: []
       parameters:
@@ -89,16 +100,22 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SlotPage' }
-        '400': { $ref: '#/components/responses/ValidationError' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/BadKey' }
 
-  /appointments:
+  /v1/appointments:
     post:
       tags: [Appointments]
       operationId: createAppointment
-      summary: Book an appointment.
+      summary: Book an appointment (§1.1.10 inbound booking).
+      description: |
+        Creates one appointment from a `patient_id` + `slot_id` pair. The slot is
+        consumed atomically; subsequent attempts to book the same slot return 404.
+        Result `status` is `BOOKED`, `version` starts at 1, `attempt_count` at 0.
       security:
         - bearerAuth: []
       parameters:
+        - $ref: '#/components/parameters/IfMatch'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
@@ -111,69 +128,89 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Appointment' }
-        '400': { $ref: '#/components/responses/ValidationError' }
+          headers:
+            Idempotent-Replayed:
+              description: "'true' when this response was served from the idempotency cache."
+              schema: { type: string, enum: ['true'] }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/BadKey' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/IdempotencyConflict' }
     get:
       tags: [Appointments]
-      operationId: listAppointmentsByDay
-      summary: Day schedule for a clinic.
+      operationId: listAppointments
+      summary: List appointments for a clinic on a given date (call list).
       security:
         - bearerAuth: []
       parameters:
-        - { in: query, name: date, required: true, schema: { type: string, format: date } }
+        - { in: query, name: date, required: true, schema: { type: string, format: date, example: '2026-10-14' } }
         - { in: query, name: clinic_id, required: true, schema: { type: string } }
         - { in: query, name: cursor, schema: { type: string } }
         - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
       responses:
         '200':
-          description: Paginated list of appointments ordered by start time.
+          description: Paginated list of appointments.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AppointmentPage' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/BadKey' }
 
-  /appointments/{appt_id}:
-    parameters:
-      - { in: path, name: appt_id, required: true, schema: { type: string } }
+  /v1/appointments/{appt_id}:
     get:
       tags: [Appointments]
       operationId: getAppointment
-      summary: Read a single appointment.
+      summary: Read a single appointment (Listing 3 canonical shape).
       security:
         - bearerAuth: []
+      parameters:
+        - { in: path, name: appt_id, required: true, schema: { type: string } }
       responses:
         '200':
           description: The appointment.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Appointment' }
+        '401': { $ref: '#/components/responses/BadKey' }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  /appointments/{appt_id}/confirm:
+  /v1/appointments/{appt_id}/confirm:
     post:
       tags: [Appointments]
       operationId: confirmAppointment
+      summary: §1.1.3 — set status=CONFIRMED after the patient agrees to the read-back.
+      description: Sets `confirmed_at` and `confirmed_via=callbot` and bumps `version`.
       security:
         - bearerAuth: []
       parameters:
         - { in: path, name: appt_id, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
           description: Updated appointment.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Appointment' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/BadKey' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/VersionConflict' }
+        '422': { $ref: '#/components/responses/IdempotencyConflict' }
 
-  /appointments/{appt_id}/cancel:
+  /v1/appointments/{appt_id}/cancel:
     post:
       tags: [Appointments]
       operationId: cancelAppointment
+      summary: §1.1.4 / §3.5 SF-05 — record a cancellation with the patient's explicit second confirmation.
+      description: |
+        Requires `confirmed: true` in the body. Without it the mock returns
+        409 `CONFIRMATION_REQUIRED` (a single ambiguous turn is not enough).
       security:
         - bearerAuth: []
       parameters:
         - { in: path, name: appt_id, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -185,17 +222,30 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Appointment' }
-        '400': { $ref: '#/components/responses/ValidationError' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/BadKey' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            Either `If-Match` mismatch (`VERSION_CONFLICT`), the cancel
+            was missing the explicit second confirmation (`CONFIRMATION_REQUIRED`),
+            or the appointment is in a state that cannot be cancelled
+            (`INVALID_STATE_TRANSITION`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
+        '422': { $ref: '#/components/responses/IdempotencyConflict' }
 
-  /appointments/{appt_id}/transfer:
+  /v1/appointments/{appt_id}/transfer:
     post:
       tags: [Appointments]
       operationId: transferAppointment
+      summary: §1.1.5 — set status=TRANSFERRED with a reason from Appendix A.
       security:
         - bearerAuth: []
       parameters:
         - { in: path, name: appt_id, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -207,17 +257,27 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Appointment' }
-        '400': { $ref: '#/components/responses/ValidationError' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/BadKey' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/VersionConflict' }
+        '422': { $ref: '#/components/responses/IdempotencyConflict' }
 
-  /appointments/{appt_id}/reschedule:
+  /v1/appointments/{appt_id}/reschedule:
     post:
       tags: [Appointments]
       operationId: rescheduleAppointment
+      summary: §1.1.6 / Listing 4 — atomically book the new slot and release the old one.
+      description: |
+        Response shape is the **minimal Listing 4 form**: `{status, new_slot_id,
+        released_slot_id, version}` — not the full appointment. The old slot is
+        re-inserted into the slot pool under its original `slot_id`; the new slot
+        is consumed.
       security:
         - bearerAuth: []
       parameters:
         - { in: path, name: appt_id, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -225,329 +285,195 @@ paths:
             schema: { $ref: '#/components/schemas/RescheduleRequest' }
       responses:
         '200':
+          description: Listing 4 minimal response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RescheduleResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/BadKey' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`SLOT_TAKEN` if `new_slot_id` is no longer open, `VERSION_CONFLICT` if `If-Match` mismatches, or `INVALID_STATE_TRANSITION`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
+        '422': { $ref: '#/components/responses/IdempotencyConflict' }
+
+  /v1/appointments/{appt_id}/unreachable:
+    post:
+      tags: [Appointments]
+      operationId: markUnreachable
+      summary: §1.1.7 / §2.2 — mark the appointment UNREACHABLE (no answer / voicemail / silent).
+      description: |
+        Idempotent: each call increments `attempt_count` and re-confirms
+        `UNREACHABLE`, so the harness can record multiple no-answer attempts on
+        the same appointment. Allowed from `{SCHEDULED, BOOKED, UNREACHABLE}`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { in: path, name: appt_id, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
           description: Updated appointment.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Appointment' }
-        '400': { $ref: '#/components/responses/ValidationError' }
-        '409': { $ref: '#/components/responses/Conflict' }
-
-  # --- Calls API ---
-
-  /calls:
-    post:
-      tags: [Calls]
-      operationId: startCall
-      summary: Start a new inbound call.
-      security:
-        - bearerAuth: []
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CallCreate' }
-      responses:
-        '201':
-          description: Call created.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Call' }
-        '400': { $ref: '#/components/responses/ValidationError' }
-
-  /calls/{call_id}:
-    parameters:
-      - { in: path, name: call_id, required: true, schema: { type: string } }
-    get:
-      tags: [Calls]
-      operationId: getCall
-      summary: Read call state.
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Call state.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Call' }
+        '401': { $ref: '#/components/responses/BadKey' }
         '404': { $ref: '#/components/responses/NotFound' }
-    patch:
-      tags: [Calls]
-      operationId: patchCall
-      summary: Update mid-call state (verified, patient_id, status).
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CallPatch' }
-      responses:
-        '200':
-          description: Updated call.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Call' }
-        '400': { $ref: '#/components/responses/ValidationError' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-
-  /calls/{call_id}/escalate:
-    post:
-      tags: [Calls]
-      operationId: escalateCall
-      summary: Transfer the live call to staff.
-      description: |
-        The transfer-to-staff scenario: invoked when the agent goes off-script,
-        after two consecutive failed understandings, on patient request, etc.
-      security:
-        - bearerAuth: []
-      parameters:
-        - { in: path, name: call_id, required: true, schema: { type: string } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/EscalateRequest' }
-      responses:
-        '200':
-          description: Call escalated. status=ESCALATED.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Call' }
-        '400':
-          description: Validation failed or invalid escalation target.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-
-  /calls/{call_id}/attempts:
-    post:
-      tags: [Calls]
-      operationId: logCallAttempt
-      summary: Log a no-answer event (ringout, voicemail, or silent turn).
-      security:
-        - bearerAuth: []
-      parameters:
-        - { in: path, name: call_id, required: true, schema: { type: string } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/AttemptRequest' }
-      responses:
-        '201':
-          description: Attempt recorded.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/CallAttempt' }
-        '400': { $ref: '#/components/responses/ValidationError' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-
-  /calls/{call_id}/end:
-    post:
-      tags: [Calls]
-      operationId: endCall
-      summary: End the call.
-      security:
-        - bearerAuth: []
-      parameters:
-        - { in: path, name: call_id, required: true, schema: { type: string } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/EndCallRequest' }
-      responses:
-        '200':
-          description: Call ended.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Call' }
-        '400': { $ref: '#/components/responses/ValidationError' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-
-  # --- Harness (admin) ---
+        '409': { $ref: '#/components/responses/VersionConflict' }
 
   /_harness/state:
     get:
       tags: [Admin]
-      operationId: harnessGetState
-      summary: Full snapshot (patients, slots, appointments, calls, escalations).
+      operationId: harnessState
+      summary: Full per-tenant state snapshot (patients + slots + appointments).
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: Full state snapshot.
+          description: Caller's data scope.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/HarnessState' }
+        '401': { $ref: '#/components/responses/BadKey' }
 
   /_harness/patients:
     get:
       tags: [Admin]
-      operationId: harnessListPatients
+      operationId: harnessPatients
+      summary: Patients in the caller's data scope.
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: Filtered list of seeded patients.
+          description: Array of patients.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/PatientPage' }
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Patient' }
+        '401': { $ref: '#/components/responses/BadKey' }
 
   /_harness/slots:
     get:
       tags: [Admin]
-      operationId: harnessListSlots
+      operationId: harnessSlots
+      summary: Slots in the caller's data scope.
       security:
         - bearerAuth: []
-      parameters:
-        - { in: query, name: clinic_id, schema: { type: string } }
-        - { in: query, name: from, schema: { type: string, format: date-time } }
-        - { in: query, name: to, schema: { type: string, format: date-time } }
       responses:
         '200':
-          description: Filtered list of slots.
+          description: Array of slots.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SlotPage' }
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Slot' }
+        '401': { $ref: '#/components/responses/BadKey' }
 
   /_harness/appointments:
     get:
       tags: [Admin]
-      operationId: harnessListAppointments
+      operationId: harnessAppointments
+      summary: Appointments in the caller's data scope.
       security:
         - bearerAuth: []
-      parameters:
-        - { in: query, name: clinic_id, schema: { type: string } }
-        - { in: query, name: date, schema: { type: string, format: date } }
-        - { in: query, name: status, schema: { $ref: '#/components/schemas/AppointmentStatus' } }
       responses:
         '200':
-          description: Filtered list of appointments.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AppointmentPage' }
-
-  /_harness/calls:
-    get:
-      tags: [Admin]
-      operationId: harnessListCalls
-      security:
-        - bearerAuth: []
-      parameters:
-        - { in: query, name: status, schema: { $ref: '#/components/schemas/CallStatus' } }
-      responses:
-        '200':
-          description: Filtered list of calls.
+          description: Array of appointments.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: '#/components/schemas/Call' }
-
-  /_harness/calls/{call_id}:
-    parameters:
-      - { in: path, name: call_id, required: true, schema: { type: string } }
-    get:
-      tags: [Admin]
-      operationId: harnessGetCall
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Single call with attempts, escalations, linked appointments.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Call' }
-
-  /_harness/escalations:
-    get:
-      tags: [Admin]
-      operationId: harnessListEscalations
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: All escalations across all calls.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: '#/components/schemas/Escalation' }
+                type: array
+                items: { $ref: '#/components/schemas/Appointment' }
+        '401': { $ref: '#/components/responses/BadKey' }
 
   /_harness/snapshot:
     get:
       tags: [Admin]
-      operationId: harnessCaptureSnapshot
+      operationId: harnessSnapshot
+      summary: Capture a state snapshot for later restore.
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: Captured snapshot.
+          description: Snapshot id.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   snapshot_id: { type: string }
-                  captured_at: { type: string, format: date-time }
+                required: [snapshot_id]
+        '401': { $ref: '#/components/responses/BadKey' }
 
   /_harness/snapshot/{sid}/restore:
-    parameters:
-      - { in: path, name: sid, required: true, schema: { type: string } }
     post:
       tags: [Admin]
-      operationId: harnessRestoreSnapshot
+      operationId: harnessSnapshotRestore
+      summary: Restore state from a prior snapshot.
       security:
         - bearerAuth: []
+      parameters:
+        - { in: path, name: sid, required: true, schema: { type: string } }
       responses:
-        '200': { description: Restored. }
+        '200':
+          description: Snapshot restored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  restored: { type: string }
+                required: [restored]
+        '401': { $ref: '#/components/responses/BadKey' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /_harness/seed:
     post:
       tags: [Admin]
       operationId: harnessSeed
-      summary: Seed the database with mock data.
+      summary: Reset and seed canonical fixtures.
       security:
         - bearerAuth: []
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
       responses:
-        '200': { description: Seeded. }
+        '200':
+          description: Seeded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seeded: { type: boolean, enum: [true] }
+                required: [seeded]
+        '401': { $ref: '#/components/responses/BadKey' }
 
   /_harness/reset:
     post:
       tags: [Admin]
       operationId: harnessReset
-      summary: Flush the database back to zero.
+      summary: Reset and re-seed (used between cases).
       security:
         - bearerAuth: []
       responses:
-        '200': { description: Reset. }
+        '200':
+          description: Reset.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reset: { type: boolean, enum: [true] }
+                required: [reset]
+        '401': { $ref: '#/components/responses/BadKey' }
 
   /_harness/time-travel:
     post:
       tags: [Admin]
       operationId: harnessTimeTravel
-      summary: Advance the system clock (test only).
+      summary: Advance the system clock by `seconds` (positive or negative).
       security:
         - bearerAuth: []
       requestBody:
@@ -557,369 +483,226 @@ paths:
             schema:
               type: object
               properties:
-                to: { type: string, format: date-time }
+                seconds: { type: integer, default: 0 }
       responses:
-        '200': { description: Clock advanced. }
-
-webhooks:
-  # NOTE: Outgoing event shapes are pinned here for future emitters.
-  # The current mock does NOT deliver webhooks — these are declared,
-  # not sent. See APIs.md §13 for status.
-  # Delete this block when the emitter lands.
-  appointmentCreated:
-    post:
-      summary: appointment.created
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WebhookEventAppointment' }
-      responses:
-        '200': { description: Acknowledged. }
-  appointmentConfirmed:
-    post:
-      summary: appointment.confirmed
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WebhookEventAppointment' }
-      responses:
-        '200': { description: Acknowledged. }
-  appointmentCancelled:
-    post:
-      summary: appointment.cancelled
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WebhookEventAppointment' }
-      responses:
-        '200': { description: Acknowledged. }
-  appointmentTransferred:
-    post:
-      summary: appointment.transferred
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WebhookEventAppointment' }
-      responses:
-        '200': { description: Acknowledged. }
-  appointmentRescheduled:
-    post:
-      summary: appointment.rescheduled
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WebhookEventAppointment' }
-      responses:
-        '200': { description: Acknowledged. }
-  callStarted:
-    post:
-      summary: call.started
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WebhookEventCall' }
-      responses:
-        '200': { description: Acknowledged. }
-  callEscalated:
-    post:
-      summary: call.escalated
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WebhookEventCall' }
-      responses:
-        '200': { description: Acknowledged. }
-  callNoAnswer:
-    post:
-      summary: call.no_answer
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WebhookEventCall' }
-      responses:
-        '200': { description: Acknowledged. }
-  callEnded:
-    post:
-      summary: call.ended
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WebhookEventCall' }
-      responses:
-        '200': { description: Acknowledged. }
+        '200':
+          description: New clock offset.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  offset_seconds: { type: integer }
+                required: [offset_seconds]
+        '401': { $ref: '#/components/responses/BadKey' }
 
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: API key
-      description: API key issued per tenant; prefix with `Bearer `.
-
   parameters:
+    IfMatch:
+      in: header
+      name: If-Match
+      required: false
+      schema: { type: integer, minimum: 1 }
+      description: 'Contract §4.2.3 — last-read appointment version (SHOULD on writes).'
     IdempotencyKey:
       in: header
       name: Idempotency-Key
       required: false
       schema: { type: string, maxLength: 255 }
-      description: Stable per-request key for replay protection. See APIs.md §8.
-
+      description: 'Contract §4.2.3 — stable per-key replay token (MUST on writes). 24h cache window.'
   responses:
-    ValidationError:
-      description: Request failed validation.
+    InvalidRequest:
+      description: '400 INVALID_REQUEST — request body or query failed validation.'
       content:
         application/json:
-          schema: { $ref: '#/components/schemas/Error' }
-    Unauthorized:
-      description: Missing or invalid bearer token.
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    BadKey:
+      description: '401 BAD_KEY — bearer token missing, malformed, or unknown.'
       headers:
         WWW-Authenticate:
-          schema: { type: string }
+          schema: { type: string, example: 'Bearer realm="clinic-mock"' }
       content:
         application/json:
-          schema: { $ref: '#/components/schemas/Error' }
-    Forbidden:
-      description: |
-        Reserved for the future case of per-scope grants.
-        **Not currently returned by the mock** — every valid key has full
-        access to its tenant, so 403 is unreachable today. Cross-tenant access
-        surfaces as `404 NOT_FOUND` (existence hidden) rather than 403.
-      headers:
-        WWW-Authenticate:
-          schema: { type: string }
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Error' }
+          schema: { $ref: '#/components/schemas/ErrorBody' }
     NotFound:
-      description: Resource not found.
+      description: '404 NOT_FOUND — resource does not exist or is not visible to the caller.'
       content:
         application/json:
-          schema: { $ref: '#/components/schemas/Error' }
-    Conflict:
-      description: State conflict (slot taken, invalid state transition, or call already ended).
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    VersionConflict:
+      description: '409 VERSION_CONFLICT — `If-Match` header does not match the current version.'
       content:
         application/json:
-          schema: { $ref: '#/components/schemas/Error' }
+          schema: { $ref: '#/components/schemas/ErrorBody' }
     IdempotencyConflict:
-      description: Idempotency-Key reused with a different payload.
+      description: '422 IDEMPOTENCY_CONFLICT — same `Idempotency-Key` reused with a different payload.'
       content:
         application/json:
-          schema: { $ref: '#/components/schemas/Error' }
-    RateLimited:
-      description: |
-        Reserved for future per-tenant rate limiting.
-        **Not currently returned by the mock** — see APIs.md §6.
-      headers:
-        Retry-After:
-          schema: { type: integer }
-        X-RateLimit-Limit:
-          schema: { type: integer }
-        X-RateLimit-Remaining:
-          schema: { type: integer }
-        X-RateLimit-Reset:
-          schema: { type: integer }
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Error' }
-
+          schema: { $ref: '#/components/schemas/ErrorBody' }
   schemas:
+    PatientVerify:
+      type: object
+      description: Identity block the bot checks against the caller's spoken name + dob.
+      required: [full_name, dob]
+      properties:
+        full_name: { type: string }
+        dob: { type: string, format: date, example: '1978-03-14' }
     Patient:
       type: object
-      required: [id, first_name, last_name, phone, dob]
+      required: [patient_id, display_name, phone, dob]
       properties:
-        id: { type: string, pattern: '^[a-z]+_[A-Za-z0-9]+$', example: 'p_12345' }
-        first_name: { type: string, example: 'Mai' }
-        last_name: { type: string, example: 'Nguyễn Thị' }
-        phone: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$', example: '0912345678' }
-        dob: { type: string, format: date, example: '1985-04-12' }
-
+        patient_id: { type: string, example: pt_3391 }
+        display_name: { type: string, example: 'N. V. A.', description: 'Initials-style label the bot speaks aloud.' }
+        phone: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$' }
+        dob: { type: string, format: date }
+        verify: { $ref: '#/components/schemas/PatientVerify' }
+    PatientRef:
+      type: object
+      description: Listing 3 — embedded patient block inside an Appointment.
+      required: [patient_id, display_name, verify]
+      properties:
+        patient_id: { type: string }
+        display_name: { type: string }
+        verify: { $ref: '#/components/schemas/PatientVerify' }
+    PatientPage:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Patient' }
+        next_cursor: { type: [string, 'null'] }
+        has_more: { type: boolean }
     Slot:
       type: object
       required: [slot_id, clinic_id, start_time, end_time, provider_id]
       properties:
-        slot_id: { type: string }
-        clinic_id: { type: string }
-        start_time: { type: string, format: date-time }
+        slot_id: { type: string, example: slot_91d2 }
+        clinic_id: { type: string, example: cl_vinmec }
+        start_time: { type: string, format: date-time, example: '2026-10-14T15:00:00+07:00' }
         end_time: { type: string, format: date-time }
         provider_id: { type: string }
-
-    SlotRef:
+    SlotPage:
       type: object
-      required: [start_time, end_time, clinic_id]
+      required: [data]
       properties:
-        start_time: { type: string, format: date-time }
-        end_time: { type: string, format: date-time }
-        clinic_id: { type: string }
-
-    PatientRef:
-      type: object
-      required: [id, name, phone]
-      properties:
-        id: { type: string }
-        name: { type: string }
-        phone: { type: string }
-
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Slot' }
+        next_cursor: { type: [string, 'null'] }
+        has_more: { type: boolean }
     AppointmentStatus:
       type: string
-      enum: [PENDING, BOOKED, CONFIRMED, CANCELLED, TRANSFERRED, RESCHEDULED, COMPLETED, NO_SHOW]
-
+      description: Contract §2.2 — the seven end states.
+      enum: [SCHEDULED, BOOKED, CONFIRMED, CANCELLED, RESCHEDULED, TRANSFERRED, UNREACHABLE]
+    CancelReason:
+      type: string
+      description: 'Appendix A — cancel_reason enumeration.'
+      enum: [PATIENT_UNAVAILABLE, NO_LONGER_NEEDED, WENT_ELSEWHERE, COST, UNSPECIFIED]
+    TransferReason:
+      type: string
+      description: 'Appendix A — transfer_reason enumeration.'
+      enum: [IDENTITY_FAILED, PATIENT_NOT_FOUND, OUT_OF_SCOPE, CLINICAL_QUESTION, NOT_UNDERSTOOD, PATIENT_REQUEST, SYSTEM_ERROR]
     Appointment:
       type: object
-      required: [id, status, slot, patient]
+      description: Contract Listing 3 — canonical GET /appointments/{id} response.
+      required:
+        - appointment_id
+        - status
+        - clinic_id
+        - starts_at
+        - ends_at
+        - department
+        - patient
+        - attempt_count
+        - version
       properties:
-        id: { type: string }
+        appointment_id: { type: string, example: apt_00417 }
         status: { $ref: '#/components/schemas/AppointmentStatus' }
-        slot: { $ref: '#/components/schemas/SlotRef' }
+        clinic_id: { type: string, example: cl_vinmec }
+        starts_at: { type: string, format: date-time, example: '2026-10-14T15:30:00+07:00' }
+        ends_at: { type: string, format: date-time }
+        department: { type: string, example: 'Nội tổng quát' }
         patient: { $ref: '#/components/schemas/PatientRef' }
-
+        cancel_reason:
+          oneOf:
+            - $ref: '#/components/schemas/CancelReason'
+            - type: 'null'
+        transfer_reason:
+          oneOf:
+            - $ref: '#/components/schemas/TransferReason'
+            - type: 'null'
+        confirmed_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        confirmed_via:
+          oneOf:
+            - type: string
+            - type: 'null'
+          description: Set to "callbot" on CONFIRMED.
+        new_slot_id:
+          oneOf:
+            - type: string
+            - type: 'null'
+          description: Audit trail of the slot picked on reschedule.
+        attempt_count: { type: integer, minimum: 0 }
+        version: { type: integer, minimum: 1, example: 3 }
+    AppointmentPage:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Appointment' }
+        next_cursor: { type: [string, 'null'] }
+        has_more: { type: boolean }
     AppointmentCreate:
       type: object
       required: [patient_id, slot_id]
       properties:
         patient_id: { type: string }
         slot_id: { type: string }
-        notes: { type: string, maxLength: 500 }
-
-    CancelReason:
-      type: string
-      enum: [PATIENT_NO_SHOW, PROVIDER_REQUEST, CLINIC_REBOOK, OTHER]
-
-    TransferReason:
-      type: string
-      enum: [EQUIPMENT_FAILURE, PROVIDER_UNAVAILABLE, PATIENT_REQUEST, OTHER]
-
     CancelRequest:
       type: object
-      required: [reason_code]
+      description: '§3.5 SF-05 — `confirmed` is the second explicit confirmation from the patient.'
+      required: [cancel_reason, confirmed]
       properties:
-        reason_code: { $ref: '#/components/schemas/CancelReason' }
-        notes: { type: string, maxLength: 500 }
-
+        cancel_reason: { $ref: '#/components/schemas/CancelReason' }
+        confirmed: { type: boolean, default: false }
     TransferRequest:
       type: object
-      required: [target_clinic_id, reason_code]
+      required: [transfer_reason]
       properties:
-        target_clinic_id: { type: string }
-        reason_code: { $ref: '#/components/schemas/TransferReason' }
-
+        transfer_reason: { $ref: '#/components/schemas/TransferReason' }
     RescheduleRequest:
       type: object
-      required: [new_slot_id]
+      description: Contract Listing 4 request body.
+      required: [new_slot_id, requested_by]
       properties:
-        new_slot_id: { type: string }
-
-    CallStatus:
-      type: string
-      enum:
-        - RINGING
-        - IN_PROGRESS
-        - ESCALATED
-        - ENDED_NO_ANSWER
-        - ENDED_VOICEMAIL
-        - ENDED_COMPLETED
-        - ENDED_FAILED
-
-    AttemptKind:
-      type: string
-      enum: [RINGOUT, VOICEMAIL, SILENT_TURN]
-
-    EscalationReason:
-      type: string
-      enum: [TWO_FAILED_UNDERSTANDINGS, OFF_SCRIPT, PATIENT_REQUEST, OTHER]
-
-    EndOutcome:
-      type: string
-      enum: [COMPLETED, NO_ANSWER, VOICEMAIL, FAILED]
-
-    CallCreate:
+        new_slot_id: { type: string, example: slot_91d2 }
+        requested_by:
+          type: string
+          enum: [PATIENT, STAFF]
+    RescheduleResponse:
       type: object
-      required: [from_number, to_number]
+      description: Contract Listing 4 minimal response (NOT the full appointment).
+      required: [status, new_slot_id, released_slot_id, version]
       properties:
-        from_number: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$' }
-        to_number: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$' }
-
-    CallPatch:
-      type: object
-      properties:
-        verified: { type: boolean }
-        patient_id: { type: string }
         status:
-          oneOf:
-            - { $ref: '#/components/schemas/CallStatus' }
-            - type: 'null'
-
-    CallAttempt:
-      type: object
-      required: [kind, at]
-      properties:
-        kind: { $ref: '#/components/schemas/AttemptKind' }
-        at: { type: string, format: date-time }
-        detail: { type: string, nullable: true, maxLength: 500 }
-
-    Escalation:
-      type: object
-      required: [reason, at]
-      properties:
-        staff_id: { type: string, nullable: true }
-        queue: { type: string, nullable: true }
-        reason: { $ref: '#/components/schemas/EscalationReason' }
-        at: { type: string, format: date-time }
-
-    EscalateRequest:
-      type: object
-      required: [reason]
-      properties:
-        staff_id: { type: string }
-        queue: { type: string }
-        reason: { $ref: '#/components/schemas/EscalationReason' }
-
-    AttemptRequest:
-      type: object
-      required: [kind]
-      properties:
-        kind: { $ref: '#/components/schemas/AttemptKind' }
-        detail: { type: string, maxLength: 500 }
-
-    EndCallRequest:
-      type: object
-      required: [outcome]
-      properties:
-        outcome: { $ref: '#/components/schemas/EndOutcome' }
-        reason: { type: string, maxLength: 500 }
-
-    Call:
-      type: object
-      required:
-        - id
-        - from_number
-        - to_number
-        - started_at
-        - status
-        - verified
-        - attempts
-        - escalations
-        - linked_appointment_ids
-      properties:
-        id: { type: string, example: 'call_01HZ...' }
-        from_number: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$' }
-        to_number: { type: string, pattern: '^(02|03|05|07|08|09)\d{8}$' }
-        started_at: { type: string, format: date-time }
-        ended_at: { type: string, format: date-time, nullable: true }
-        status: { $ref: '#/components/schemas/CallStatus' }
-        patient_id: { type: string, nullable: true }
-        verified: { type: boolean }
-        attempts:
-          type: array
-          items: { $ref: '#/components/schemas/CallAttempt' }
-        escalations:
-          type: array
-          items: { $ref: '#/components/schemas/Escalation' }
-        linked_appointment_ids:
-          type: array
-          items: { type: string }
-
+          type: string
+          enum: [RESCHEDULED]
+        new_slot_id: { type: string }
+        released_slot_id: { type: string }
+        version: { type: integer, minimum: 2 }
     HarnessState:
       type: object
+      required: [patients, slots, appointments]
       properties:
         patients:
           type: array
@@ -930,100 +713,24 @@ components:
         appointments:
           type: array
           items: { $ref: '#/components/schemas/Appointment' }
-        calls:
-          type: array
-          items: { $ref: '#/components/schemas/Call' }
-        escalations:
-          type: array
-          items: { $ref: '#/components/schemas/Escalation' }
-
-    Page:
-      type: object
-      required: [data, has_more]
-      properties:
-        data:
-          type: array
-          items: {}
-        next_cursor: { type: string, nullable: true }
-        has_more: { type: boolean }
-
-    PatientPage:
-      allOf:
-        - $ref: '#/components/schemas/Page'
-        - type: object
-          properties:
-            data:
-              type: array
-              items: { $ref: '#/components/schemas/Patient' }
-
-    SlotPage:
-      allOf:
-        - $ref: '#/components/schemas/Page'
-        - type: object
-          properties:
-            data:
-              type: array
-              items: { $ref: '#/components/schemas/Slot' }
-
-    AppointmentPage:
-      allOf:
-        - $ref: '#/components/schemas/Page'
-        - type: object
-          properties:
-            data:
-              type: array
-              items: { $ref: '#/components/schemas/Appointment' }
-
-    ErrorDetail:
-      type: object
-      properties:
-        field: { type: string }
-        issue: { type: string }
-
     ErrorBody:
-      type: object
-      required: [code, message, request_id]
-      properties:
-        code:
-          type: string
-          description: |
-            Machine-readable error code. Branch on this; do not parse `message`.
-            Catalog: APIs.md §7.2. Possible values:
-            VALIDATION_ERROR, INVALID_ESCALATION_TARGET, UNAUTHORIZED, FORBIDDEN,
-            NOT_FOUND, UNSUPPORTED_VERSION, SLOT_TAKEN, RESCHEDULE_SLOT_TAKEN,
-            INVALID_STATE_TRANSITION, CALL_ALREADY_ENDED, IDEMPOTENCY_CONFLICT,
-            RATE_LIMITED, INTERNAL_ERROR, SERVICE_UNAVAILABLE.
-        message: { type: string }
-        request_id: { type: string }
-        details:
-          type: array
-          items: { $ref: '#/components/schemas/ErrorDetail' }
-
-    Error:
       type: object
       required: [error]
       properties:
-        error: { $ref: '#/components/schemas/ErrorBody' }
-
-    WebhookMeta:
-      type: object
-      required: [name, id, occurred_at, tenant_id]
-      properties:
-        name: { type: string }
-        id: { type: string }
-        occurred_at: { type: string, format: date-time }
-        tenant_id: { type: string }
-
-    WebhookEventAppointment:
-      type: object
-      required: [event, appointment]
-      properties:
-        event: { $ref: '#/components/schemas/WebhookMeta' }
-        appointment: { $ref: '#/components/schemas/Appointment' }
-
-    WebhookEventCall:
-      type: object
-      required: [event, call]
-      properties:
-        event: { $ref: '#/components/schemas/WebhookMeta' }
-        call: { $ref: '#/components/schemas/Call' }
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              description: 'Appendix A catalog: `INVALID_REQUEST` (400), `BAD_KEY` (401), `NOT_FOUND` (404), `SLOT_TAKEN` / `VERSION_CONFLICT` / `CONFIRMATION_REQUIRED` / `INVALID_STATE_TRANSITION` (409), `RATE_LIMITED` (429, reserved), `UPSTREAM` (503, reserved).'
+            message: { type: string }
+            request_id: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  issue: { type: string }
+                  value: {}

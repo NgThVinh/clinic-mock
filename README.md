@@ -1,7 +1,10 @@
 # clinic-mock
 
-Public-API mock for the clinic platform. FastAPI in-process; bearer-key auth;
-each API key is fully isolated from every other; optional Langfuse tracing.
+Clinic mock aligned to the **AI Health Residency product contract, Rev 1.0**
+([callbot-contract-site.vercel.app](https://callbot-contract-site.vercel.app/)).
+FastAPI in-process; bearer-key auth; each API key is fully isolated from every
+other; canonical contract fixtures (`apt_00417`, `pt_3391`, `slot_91d2`, `cl_vinmec`)
+are visible to every caller; optional Langfuse tracing.
 
 The full contract lives in [`docs/APIs.md`](docs/APIs.md) (authoritative human
 spec) and [`docs/openapi.yaml`](docs/openapi.yaml) (machine-readable). This
@@ -107,11 +110,18 @@ export KEY=your-api-key-here
 export HOST=http://localhost:8000
 ```
 
-### Book an appointment
+### Find a patient (inbound call, §1.1.9)
+
+```bash
+curl -s "$HOST/v1/patients?phone=0912345600" \
+  -H "Authorization: Bearer $KEY" | jq '.data[0].patient_id, .data[0].verify'
+```
+
+### Book an appointment (§1.1.10)
 
 ```bash
 # 1. Find an open slot
-curl -s "$HOST/v1/slots?clinic_id=c_001&from=2026-09-15T00:00:00Z&to=2026-09-16T00:00:00Z" \
+curl -s "$HOST/v1/slots?clinic_id=cl_vinmec&from=2026-10-14T00:00:00Z&to=2026-10-15T00:00:00Z" \
   -H "Authorization: Bearer $KEY" | jq '.data[0].slot_id'
 
 # 2. Book it
@@ -119,50 +129,48 @@ curl -s -X POST "$HOST/v1/appointments" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: $(uuidgen)" \
-  -d '{"patient_id": "p_12345", "slot_id": "s_987"}'
+  -d '{"patient_id": "pt_3391", "slot_id": "slot_91d2"}'
 ```
 
-### Lifecycle: confirm → cancel / transfer / reschedule
+### Lifecycle: confirm / cancel / transfer / reschedule / unreachable
 
 ```bash
-APPT=a_01HZ...
+# §1.1.3 — confirm sets CONFIRMED + confirmed_at + confirmed_via=callbot
+curl -s -X POST "$HOST/v1/appointments/apt_00417/confirm" \
+  -H "Authorization: Bearer $KEY" \
+  -H "If-Match: 3" \
+  -H "Idempotency-Key: $(uuidgen)"
 
-curl -s -X POST "$HOST/v1/appointments/$APPT/confirm" \
-  -H "Authorization: Bearer $KEY"
-
-curl -s -X POST "$HOST/v1/appointments/$APPT/cancel" \
+# §1.1.4 + §3.5 SF-05 — confirmed:true is required (one ambiguous turn is not enough)
+curl -s -X POST "$HOST/v1/appointments/apt_00417/cancel" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"reason_code": "PATIENT_REQUEST"}'
+  -H "If-Match: 3" \
+  -d '{"cancel_reason": "PATIENT_UNAVAILABLE", "confirmed": true}'
+
+# §1.1.5 — transfer (status flip, no sibling appointment)
+curl -s -X POST "$HOST/v1/appointments/apt_00417/transfer" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -H "If-Match: 3" \
+  -d '{"transfer_reason": "CLINICAL_QUESTION"}'
+
+# §1.1.6 / Listing 4 — atomic slot swap; minimal response
+curl -s -X POST "$HOST/v1/appointments/apt_00417/reschedule" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -H "If-Match: 3" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"new_slot_id": "slot_91d2", "requested_by": "PATIENT"}'
+# {"status":"RESCHEDULED","new_slot_id":"slot_91d2","released_slot_id":"slot_77aa","version":4}
+
+# §1.1.7 / §2.2 — unreachable (idempotent; each call increments attempt_count)
+curl -s -X POST "$HOST/v1/appointments/apt_00417/unreachable" \
+  -H "Authorization: Bearer $KEY" \
+  -H "If-Match: 3"
 ```
 
-### Calls: start → escalate → end
-
-```bash
-# Start
-CALL=$(curl -s -X POST "$HOST/v1/calls" \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"from_number": "0912345678", "to_number": "0987654321"}' | jq -r .id)
-
-# Verify identity mid-call
-curl -s -X PATCH "$HOST/v1/calls/$CALL" \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"verified": true, "patient_id": "p_12345"}'
-
-# Escalate to staff
-curl -s -X POST "$HOST/v1/calls/$CALL/escalate" \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"staff_id": "stf_01", "reason": "PATIENT_REQUEST"}'
-
-# End with outcome
-curl -s -X POST "$HOST/v1/calls/$CALL/end" \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"outcome": "COMPLETED"}'
-```
+The Calls API (`/v1/calls/*`) is the bot's contract (§4.1), not the mock's. Bots expose those endpoints themselves; the mock only carries appointment state.
 
 ---
 
@@ -256,14 +264,16 @@ src/clinic_mock/
 ├── app.py             # FastAPI app, middleware (auth, request-id), custom OpenAPI
 ├── auth.py            # bearer-key parser; per-key isolation registry
 ├── config.py          # pydantic-settings (loads .env)
-├── errors.py          # ApiError envelope + exception handlers
-├── lifecycle.py       # appointment/call state-transition guards
+├── errors.py          # ApiError envelope + exception handlers (Appendix A codes)
+├── lifecycle.py       # appointment state-transition guards (§2.2)
 ├── logger.py          # loguru setup
 ├── routes.py          # all v1 + harness + health routes
-├── schemas.py         # Pydantic models (Patient, Slot, Appointment, Call, ...)
-├── store.py           # in-memory db + seed fixtures
+├── schemas.py         # Pydantic models matching contract §2.2 + Appendix A
+├── store.py           # in-memory db + canonical + per-tenant seed fixtures
 └── tracing.py         # Langfuse + FastAPI OTel instrumentation
 ```
 
-`docs/APIs.md` is the source of truth for the contract; the code is the
-source of truth for behavior. Where they disagree, trust the code.
+The product contract at
+[callbot-contract-site.vercel.app](https://callbot-contract-site.vercel.app/)
+is the source of truth for the contract. The code is the source of truth for
+behavior. `docs/APIs.md` is the human-readable companion to both.

@@ -470,9 +470,9 @@ def mark_unreachable(
     appt_id: str,
     headers: Annotated[WriteHeaders, Depends(write_headers)],
 ):
-    """§2.2 — UNREACHABLE end state (no answer / voicemail / line busy).
-    Increments attempt_count, transitions to UNREACHABLE, returns the
-    updated Appointment.
+    """§1.1.7 / §2.2 — UNREACHABLE end state (no answer / voicemail / line busy).
+    Idempotent: each call increments attempt_count and (re-)confirms UNREACHABLE,
+    so the harness can record multiple no-answer attempts on the same appointment.
     """
     tenant = _tenant(request)
     if headers.idempotency_key:
@@ -485,7 +485,11 @@ def mark_unreachable(
             return replay["body"]
     appt = _get_appt(appt_id, tenant)
     _check_version(appt, headers.if_match)
-    assert_appointment_transition(appt.status, "unreachable")
+    # §1.1.7 — every no-answer attempt increments attempt_count. Allow the
+    # call from SCHEDULED/BOOKED (initial transition) and from UNREACHABLE
+    # itself (idempotent retry). Other terminal states (CANCELLED, etc.) block.
+    if appt.status not in {"SCHEDULED", "BOOKED", "UNREACHABLE"}:
+        assert_appointment_transition(appt.status, "unreachable")
     updated = appt.model_copy(
         update={
             "status": "UNREACHABLE",
