@@ -59,7 +59,7 @@ def create_app() -> FastAPI:
                 status_code=401,
                 content={
                     "error": {
-                        "code": "UNAUTHORIZED",
+                        "code": "BAD_KEY",
                         "message": "Missing bearer token.",
                         "request_id": rid,
                     }
@@ -73,7 +73,7 @@ def create_app() -> FastAPI:
                 status_code=401,
                 content={
                     "error": {
-                        "code": "UNAUTHORIZED",
+                        "code": "BAD_KEY",
                         "message": "Invalid bearer token.",
                         "request_id": rid,
                     }
