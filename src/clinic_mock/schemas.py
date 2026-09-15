@@ -80,6 +80,12 @@ TransferReason = Literal[
     "PATIENT_REQUEST",
     "SYSTEM_ERROR",
 ]
+UnreachableReason = Literal[
+    "SILENCE",
+    "VOICEMAIL",
+    "NO_ANSWER",
+    "LINE_BUSY",
+]
 RescheduleRequestedBy = Literal["PATIENT", "STAFF"]
 
 
@@ -110,6 +116,7 @@ class Appointment(BaseModel):
     patient: PatientRef
     cancel_reason: CancelReason | None = None
     transfer_reason: TransferReason | None = None
+    unreachable_reason: UnreachableReason | None = None
     confirmed_at: IsoDateTime | None = None
     confirmed_via: str | None = None
     new_slot_id: str | None = None  # audit trail of the slot picked on reschedule
@@ -139,6 +146,14 @@ class TransferRequest(BaseModel):
     no sibling appointment is created at a target clinic."""
 
     transfer_reason: TransferReason
+
+
+class UnreachableRequest(BaseModel):
+    """§4.2.5 — body chỉ chứa unreachable_reason; attempt_count bị reject."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    unreachable_reason: UnreachableReason
 
 
 class RescheduleRequest(BaseModel):

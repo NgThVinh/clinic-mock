@@ -100,7 +100,7 @@ def create_app() -> FastAPI:
             status_code=400,
             content={
                 "error": {
-                    "code": "VALIDATION_ERROR",
+                    "code": "INVALID_REQUEST",
                     "message": "Request validation failed.",
                     "request_id": rid,
                     "details": details,

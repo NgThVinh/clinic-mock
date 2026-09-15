@@ -150,11 +150,13 @@ Atomically books the new slot and releases the old one back into `GET /v1/slots`
   ```
 * **Errors:** `404 NOT_FOUND`, `409 SLOT_TAKEN`, `409 VERSION_CONFLICT`, `409 INVALID_STATE_TRANSITION`, `422 IDEMPOTENCY_CONFLICT`.
 
-#### `POST /v1/appointments/{id}/unreachable` (§1.1.7 / §2.2)
+#### `POST /v1/appointments/{id}/unreachable` (§1.1.7 / §2.2 / §4.2.5)
 Marks the appointment UNREACHABLE (no answer / voicemail / line busy). **Idempotent** — each call increments `attempt_count` and re-confirms `UNREACHABLE`, so the harness can record multiple no-answer attempts on the same appointment. Allowed from `{SCHEDULED, BOOKED, UNREACHABLE}`.
 * **Headers:** `Idempotency-Key`, `If-Match`.
+* **Request body:** `{ "unreachable_reason": "SILENCE" }` — one of `SILENCE`, `VOICEMAIL`, `NO_ANSWER`, `LINE_BUSY` (Appendix A). Body with `attempt_count` is rejected with `400 INVALID_REQUEST` (§4.2.5).
+* `Idempotency-Key` is evaluated **before** `If-Match`: a replayed key returns the cached `200` response even if `If-Match` is stale (§4.2.5).
 * **Response `200 OK`:** `Appointment`.
-* **Errors:** `404 NOT_FOUND`, `409 VERSION_CONFLICT`, `409 INVALID_STATE_TRANSITION`.
+* **Errors:** `400 INVALID_REQUEST`, `404 NOT_FOUND`, `409 VERSION_CONFLICT`, `409 INVALID_STATE_TRANSITION`.
 
 ### 3.4 Lifecycle State Machine
 
@@ -235,6 +237,7 @@ Per-tenant scoring-harness endpoints. **Reserved for the harness** — contract 
   "patient": { "...": "PatientRef" },
   "cancel_reason": null,
   "transfer_reason": null,
+  "unreachable_reason": null,
   "confirmed_at": null,
   "confirmed_via": null,
   "new_slot_id": null,
@@ -293,6 +296,15 @@ Per-tenant scoring-harness endpoints. **Reserved for the harness** — contract 
 | `PATIENT_REQUEST` | Patient asked for a human. |
 | `SYSTEM_ERROR` | Bot internal failure. |
 
+### Unreachable — `unreachable_reason`
+
+| Code | When |
+| :--- | :--- |
+| `SILENCE` | Caller silent 3 turns in a row (scored path via `silence_ms`). |
+| `VOICEMAIL` | Voicemail greeting detected (scored path via clip). |
+| `NO_ANSWER` | No answer — live call week 6 only. |
+| `LINE_BUSY` | Line busy — live call week 6 only. |
+
 ## 7. Validation Rules
 
 | Field | Rule |
@@ -304,6 +316,7 @@ Per-tenant scoring-harness endpoints. **Reserved for the harness** — contract 
 | `date` | `YYYY-MM-DD` |
 | `cancel_reason` | One of `PATIENT_UNAVAILABLE`, `NO_LONGER_NEEDED`, `WENT_ELSEWHERE`, `COST`, `UNSPECIFIED` |
 | `transfer_reason` | One of `IDENTITY_FAILED`, `PATIENT_NOT_FOUND`, `OUT_OF_SCOPE`, `CLINICAL_QUESTION`, `NOT_UNDERSTOOD`, `PATIENT_REQUEST`, `SYSTEM_ERROR` |
+| `unreachable_reason` | One of `SILENCE`, `VOICEMAIL`, `NO_ANSWER`, `LINE_BUSY` |
 | `requested_by` (reschedule) | One of `PATIENT`, `STAFF` |
 | `If-Match` | Integer ≥ 1 |
 | `Idempotency-Key` | ≤ 255 chars |

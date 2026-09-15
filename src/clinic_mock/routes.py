@@ -39,6 +39,7 @@ from clinic_mock.schemas import (
     RescheduleRequest,
     Slot,
     TransferRequest,
+    UnreachableRequest,
     WriteHeaders,
 )
 from clinic_mock.store import CANONICAL_TENANT, db, now_iso, seed_default
@@ -468,31 +469,31 @@ def reschedule_appointment(
 def mark_unreachable(
     request: Request,
     appt_id: str,
+    body: UnreachableRequest,
     headers: Annotated[WriteHeaders, Depends(write_headers)],
 ):
-    """§1.1.7 / §2.2 — UNREACHABLE end state (no answer / voicemail / line busy).
+    """§4.2.5 — UNREACHABLE end state (no answer / voicemail / line busy).
     Idempotent: each call increments attempt_count and (re-)confirms UNREACHABLE,
     so the harness can record multiple no-answer attempts on the same appointment.
+    Idempotency-Key is evaluated before If-Match per §4.2.5.
     """
     tenant = _tenant(request)
     if headers.idempotency_key:
         replay = _idempotent_check(
             headers.idempotency_key,
             f"POST /v1/appointments/{appt_id}/unreachable",
-            {"if_match": headers.if_match},
+            body.model_dump(),
         )
         if replay is not None:
             return replay["body"]
     appt = _get_appt(appt_id, tenant)
     _check_version(appt, headers.if_match)
-    # §1.1.7 — every no-answer attempt increments attempt_count. Allow the
-    # call from SCHEDULED/BOOKED (initial transition) and from UNREACHABLE
-    # itself (idempotent retry). Other terminal states (CANCELLED, etc.) block.
     if appt.status not in {"SCHEDULED", "BOOKED", "UNREACHABLE"}:
         assert_appointment_transition(appt.status, "unreachable")
     updated = appt.model_copy(
         update={
             "status": "UNREACHABLE",
+            "unreachable_reason": body.unreachable_reason,
             "attempt_count": appt.attempt_count + 1,
             "version": appt.version + 1,
         }
@@ -502,7 +503,7 @@ def mark_unreachable(
         _idempotent_store(
             headers.idempotency_key,
             f"POST /v1/appointments/{appt_id}/unreachable",
-            {"if_match": headers.if_match},
+            body.model_dump(),
             200,
             updated.model_dump(),
         )

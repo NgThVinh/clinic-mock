@@ -29,7 +29,7 @@ class ApiError(HTTPException):
 def validation_error(
     message: str, details: list[dict[str, Any]] | None = None
 ) -> ApiError:
-    return ApiError(400, "VALIDATION_ERROR", message, details=details)
+    return ApiError(400, "INVALID_REQUEST", message, details=details)
 
 
 def unauthorized() -> ApiError:
