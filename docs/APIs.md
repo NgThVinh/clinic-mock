@@ -1,15 +1,12 @@
 # Clinic Platform API Specification
 
-Version: **v1** (stable) · Last revised: 2026-09-14 · Companion: [`openapi.yaml`](openapi.yaml) · [`CHANGELOG.md`](CHANGELOG.md)
+Version: **v2.0.0** · Last revised: 2026-09-15 · Companion: [`openapi.yaml`](openapi.yaml) · [`CHANGELOG.md`](CHANGELOG.md)
+
+Source of truth: the AI Health Residency product contract, Rev 1.0 ([callbot-contract-site.vercel.app](https://callbot-contract-site.vercel.app/)).
 
 ## 0. Overview
 
-The Clinic Platform API is a public, versioned HTTP API in two clearly-scoped surfaces on the same base URL:
-
-* **Appointment API** — booking and lifecycle of medical appointments.
-* **Calls API** — voice-agent call lifecycle (start, identity verification state, escalation to staff, no-answer logging, end).
-
-This document is the authoritative human-readable contract; the companion [`openapi.yaml`](openapi.yaml) is the machine-readable form and source of truth for client tooling.
+The Clinic Platform API is the surface that the team's bot calls into. It is a public, versioned HTTP API in a single scope on the same base URL — appointment and discovery endpoints. The bot's own `/v1/calls/*` endpoints (contract §4.1) live on the bot service and are out of scope here.
 
 | Property | Value |
 | :--- | :--- |
@@ -17,9 +14,8 @@ This document is the authoritative human-readable contract; the companion [`open
 | Base URL (sandbox) | `https://sandbox.api.clinic.example/v1` |
 | Transport | HTTPS only; HTTP requests are rejected at the edge. |
 | Encoding | `Content-Type: application/json; charset=utf-8` |
-| Stability | `v1` is stable. Breaking changes ship as `v2`; non-breaking additions ship within `v1`. |
-| Deprecation window | 12 months minimum after a route is first advertised with `Sunset`. |
-| Time format | RFC 3339 / ISO-8601 in UTC with `Z` suffix; date-only fields are `YYYY-MM-DD`. |
+| Stability | `v2` is stable. Breaking changes ship as `v3`; non-breaking additions ship within `v2`. |
+| Time format | RFC 3339 / ISO-8601 — UTC (`Z`) **or** offset (`+07:00`). Date-only fields are `YYYY-MM-DD`. |
 
 ## 1. Conventions
 
@@ -28,10 +24,10 @@ This document is the authoritative human-readable contract; the companion [`open
 | Header | Required | Description |
 | :--- | :--- | :--- |
 | `Authorization` | yes (except `/health`, `/docs`, `/openapi.json`, `/redoc`) | `Bearer <api_key>` — see [Authentication](#2-authentication). |
-| `Content-Type` | on requests with a body | Must be `application/json; charset=utf-8`. |
-| `Accept-Version` | recommended | API version; defaults to `v1` if absent — see [Versioning](#3-versioning). |
-| `Idempotency-Key` | recommended on `POST` | Stable per-key key for safe replays — see [Idempotency](#8-idempotency). |
-| `X-Request-Id` | recommended | Client-supplied correlation id (UUIDv4). Echoed in the response, error envelope, and emitted as the `langfuse.request.id` attribute on every trace. |
+| `Content-Type` | on requests with a body | `application/json; charset=utf-8`. |
+| `Idempotency-Key` | **MUST on every write** (§4.2.3) | Stable per-key token, ≤ 255 chars. Replays with the same payload return the cached response; same key + different payload returns `422 IDEMPOTENCY_CONFLICT`. |
+| `If-Match` | SHOULD on every write (§4.2.3) | Last-read `version` of the appointment (integer). Mismatch returns `409 VERSION_CONFLICT`. |
+| `X-Request-Id` | recommended | Client-supplied correlation id. Echoed in the response and the error envelope. |
 
 ### 1.2 Response Headers (every response)
 
@@ -39,7 +35,7 @@ This document is the authoritative human-readable contract; the companion [`open
 | :--- | :--- |
 | `Content-Type` | `application/json; charset=utf-8` |
 | `X-Request-Id` | Server-issued if the client omitted one. |
-| `X-RateLimit-*` | Current bucket state — see [Rate Limiting](#6-rate-limiting). |
+| `Idempotent-Replayed` | `true` on `/v1/appointments` when the response was served from the idempotency cache. |
 
 ## 2. Authentication & Data Isolation
 
@@ -54,505 +50,296 @@ Authorization: Bearer <api_key>
 ```
 
 * `<api_key>` must start with the prefix `sk_`.
-* Keys are registered via the `MOCK_API_KEYS` env var as a comma-separated list (`sk_xxx,sk_yyy,…`). Each key is automatically scoped to its own isolated data; no manual scoping required.
+* Keys are registered via the `MOCK_API_KEYS` env var as a comma-separated list (`sk_xxx,sk_yyy,…`). Each key is automatically scoped to its own isolated data.
 * The legacy explicit form (`scope:sk_xxx`) is still accepted if a human-readable scope label is needed.
-* No expiration, no rotation, no revocation — a key is valid for as long as it is present in `MOCK_API_KEYS` and is removed only by editing the env.
+* No expiration, no rotation, no revocation.
 
 ### 2.2 Isolation Guarantees
 
 * A caller **cannot list, read, or mutate another caller's data**. Cross-key access is hidden, not forbidden — see §2.3.
 * The internal isolation scope is **never returned in response payloads**. It exists server-side only and is marked `exclude=True` on every response model.
-* `/_harness/*` is **per-key**, not global. Each key sees only its own patients, slots, appointments, calls, and escalations — even via `/state`.
+* `/_harness/*` is **per-key**, not global.
+* **Canonical contract fixtures** (e.g. `apt_00417`, `pt_3391`, `slot_91d2`, `cl_vinmec`) are seeded once under a shared sentinel tenant and visible to every caller. Per-team fixtures remain isolated.
 
 ### 2.3 Failure Modes
 
 | HTTP | Code | When | Response Header |
 | :---: | :--- | :--- | :--- |
-| `401` | `UNAUTHORIZED` | Token missing, malformed (no `sk_` prefix), or unknown to `MOCK_API_KEYS`. | `WWW-Authenticate: Bearer realm="clinic-mock"` |
-| `404` | `NOT_FOUND` | Resource exists but belongs to another caller (existence is hidden, never `403`). | — |
-
-`403 FORBIDDEN` is **defined** for the future case of per-scope grants, but the mock does not currently enforce per-scope checks — every valid key has full access to its own data, so `403` is unreachable today.
+| `400` | `INVALID_REQUEST` | Request body or query failed validation. `details[]` names offending fields. | — |
+| `401` | `BAD_KEY` | Token missing, malformed, or unknown to `MOCK_API_KEYS`. | `WWW-Authenticate: Bearer realm="clinic-mock"` |
+| `404` | `NOT_FOUND` | Resource does not exist or is not visible to the caller. | — |
+| `409` | `SLOT_TAKEN` | Referenced `slot_id` is already reserved. | — |
+| `409` | `VERSION_CONFLICT` | `If-Match` does not match the current `version`. | — |
+| `409` | `CONFIRMATION_REQUIRED` | Cancel was issued without the explicit second confirmation (§3.5 SF-05). | — |
+| `409` | `INVALID_STATE_TRANSITION` | Action not allowed from the current appointment status. | — |
+| `422` | `IDEMPOTENCY_CONFLICT` | Same `Idempotency-Key` reused with a different payload. | — |
+| `429` | `RATE_LIMITED` | Reserved for future per-key rate limiting; not currently returned. | `Retry-After` (future) |
+| `503` | `UPSTREAM` | Reserved for upstream failures; not currently returned. | `Retry-After` (future) |
 
 ### 2.4 Operator Configuration
 
 | Env Var | Required | Description |
 | :--- | :--- | :--- |
-| `MOCK_API_KEYS` | yes for multi-caller testing | Comma-separated `sk_xxx` keys. Each key is auto-isolated (or labelled explicitly via the legacy `scope:sk_xxx` form). |
+| `MOCK_API_KEYS` | yes for multi-caller testing | Comma-separated `sk_xxx` keys. Each key is auto-isolated. |
 
-Entries that lack the `sk_` prefix are silently dropped — typos in env should not crash the mock.
+## 3. Endpoints
 
-## 3. Versioning
+### 3.1 Discovery & Lookup
 
-Versions travel in the URL (`/v1`) **and** in the `Accept-Version` header.
+#### `GET /v1/patients`
+Finds patient records by phone. Used during inbound calls (§1.1.9) to identify the caller before booking.
+* **Query:** `phone` (string, required, `^(02|03|05|07|08|09)\d{8}$`), optional `cursor`, `limit`.
+* **Response `200 OK`:** Paginated `Patient` envelope. Each patient carries `display_name` and `verify: {full_name, dob}`.
 
-* Default when `Accept-Version` is absent: `v1`.
-* Unknown or already-sunset versions return `406 UNSUPPORTED_VERSION`.
-* Deprecated routes advertise sunset via the `Sunset: <RFC 7231 date>` and `Deprecation: true` response headers and remain functional for **12 months** after first announcement.
+#### `GET /v1/slots`
+Retrieves genuinely open, bookable time slots. The **only** legal source for presenting availability to a caller (§1.1.6).
+* **Query:** `clinic_id` (required), `from` (RFC 3339, required), `to` (RFC 3339, required, `to > from`, `to - from ≤ 14d`), optional `cursor`, `limit`.
+* **Response `200 OK`:** Paginated `Slot` envelope. Times may carry a `±HH:MM` offset (`+07:00` for Vietnam).
 
-## 4. Environments
+### 3.2 Booking & Reading
 
-| Environment | Base URL | Notes |
+#### `POST /v1/appointments`
+Creates one appointment, consuming an open slot (§1.1.10 inbound booking).
+* **Headers:** `Idempotency-Key` (MUST), `If-Match` (SHOULD, but version starts at 1 so typically absent on create).
+* **Request body:** `{ "patient_id": "pt_3391", "slot_id": "slot_91d2" }`
+* **Response `201 Created`:** `Appointment` with `status = BOOKED`, `version = 1`, `attempt_count = 0`.
+* **Errors:** `400 INVALID_REQUEST`, `401 BAD_KEY`, `404 NOT_FOUND` (patient or slot), `422 IDEMPOTENCY_CONFLICT`.
+
+#### `GET /v1/appointments/{id}`
+Reads a single appointment — Listing 3 canonical shape.
+* **Response `200 OK`:** `Appointment`.
+* **Errors:** `401 BAD_KEY`, `404 NOT_FOUND`.
+
+#### `GET /v1/appointments?date=&clinic_id=`
+Generates the call list for a clinic on a given date, ordered by `starts_at`.
+* **Query:** `date` (`YYYY-MM-DD`, required), `clinic_id` (required), optional `cursor`, `limit`.
+* **Response `200 OK`:** Paginated `Appointment` envelope.
+
+### 3.3 Lifecycle
+
+#### `POST /v1/appointments/{id}/confirm` (§1.1.3)
+Sets `status = CONFIRMED`. Also sets `confirmed_at` (timestamp) and `confirmed_via = "callbot"`. Bumps `version`.
+* **Headers:** `Idempotency-Key`, `If-Match`.
+* **Errors:** `404 NOT_FOUND`, `409 VERSION_CONFLICT`, `409 INVALID_STATE_TRANSITION`, `422 IDEMPOTENCY_CONFLICT`.
+
+#### `POST /v1/appointments/{id}/cancel` (§1.1.4 / §3.5 SF-05)
+Sets `status = CANCELLED`. Persists `cancel_reason` from Appendix A.
+* **Headers:** `Idempotency-Key`, `If-Match`.
+* **Request body:** `{ "cancel_reason": "PATIENT_UNAVAILABLE", "confirmed": true }`
+* **`confirmed: true` is required.** Without it the mock returns `409 CONFIRMATION_REQUIRED` — a single ambiguous turn is not enough to cancel (§3.5 SF-05).
+* **Errors:** `404 NOT_FOUND`, `409 CONFIRMATION_REQUIRED`, `409 VERSION_CONFLICT`, `409 INVALID_STATE_TRANSITION`, `422 IDEMPOTENCY_CONFLICT`.
+
+#### `POST /v1/appointments/{id}/transfer` (§1.1.5)
+Sets `status = TRANSFERRED`. Persists `transfer_reason` from Appendix A. **No sibling appointment is created** — the transfer is a status flip.
+* **Headers:** `Idempotency-Key`, `If-Match`.
+* **Request body:** `{ "transfer_reason": "CLINICAL_QUESTION" }`
+* **Errors:** `404 NOT_FOUND`, `409 VERSION_CONFLICT`, `409 INVALID_STATE_TRANSITION`, `422 IDEMPOTENCY_CONFLICT`.
+
+#### `POST /v1/appointments/{id}/reschedule` (§1.1.6 / Listing 4)
+Atomically books the new slot and releases the old one back into `GET /v1/slots` under its original `slot_id`. Bumps `version`.
+* **Headers:** `Idempotency-Key`, `If-Match`.
+* **Request body:** `{ "new_slot_id": "slot_91d2", "requested_by": "PATIENT" }`
+* **Response `200 OK` — Listing 4 minimal shape** (NOT the full appointment):
+  ```json
+  {
+    "status": "RESCHEDULED",
+    "new_slot_id": "slot_91d2",
+    "released_slot_id": "slot_77aa",
+    "version": 4
+  }
+  ```
+* **Errors:** `404 NOT_FOUND`, `409 SLOT_TAKEN`, `409 VERSION_CONFLICT`, `409 INVALID_STATE_TRANSITION`, `422 IDEMPOTENCY_CONFLICT`.
+
+#### `POST /v1/appointments/{id}/unreachable` (§1.1.7 / §2.2 / §4.2.5)
+Marks the appointment UNREACHABLE (no answer / voicemail / line busy). **Idempotent** — each call increments `attempt_count` and re-confirms `UNREACHABLE`, so the harness can record multiple no-answer attempts on the same appointment. Allowed from `{SCHEDULED, BOOKED, UNREACHABLE}`.
+* **Headers:** `Idempotency-Key`, `If-Match`.
+* **Request body:** `{ "unreachable_reason": "SILENCE" }` — one of `SILENCE`, `VOICEMAIL`, `NO_ANSWER`, `LINE_BUSY` (Appendix A). Body with `attempt_count` is rejected with `400 INVALID_REQUEST` (§4.2.5).
+* `Idempotency-Key` is evaluated **before** `If-Match`: a replayed key returns the cached `200` response even if `If-Match` is stale (§4.2.5).
+* **Response `200 OK`:** `Appointment`.
+* **Errors:** `400 INVALID_REQUEST`, `404 NOT_FOUND`, `409 VERSION_CONFLICT`, `409 INVALID_STATE_TRANSITION`.
+
+### 3.4 Lifecycle State Machine
+
+| From \ Action | confirm | cancel | transfer | reschedule | unreachable |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `SCHEDULED`   | → CONFIRMED | → CANCELLED | → TRANSFERRED | → RESCHEDULED | → UNREACHABLE |
+| `BOOKED`      | → CONFIRMED | → CANCELLED | → TRANSFERRED | → RESCHEDULED | → UNREACHABLE |
+| `CONFIRMED`   | —           | → CANCELLED | → TRANSFERRED | → RESCHEDULED | — |
+| `CANCELLED`   | —           | —           | —             | —             | — |
+| `RESCHEDULED` | —           | —           | —             | —             | — |
+| `TRANSFERRED` | —           | —           | —             | —             | — |
+| `UNREACHABLE` | —           | —           | —             | —             | (idempotent) |
+
+Anything off-script returns `409 INVALID_STATE_TRANSITION`.
+
+## 4. Admin & Operations (`/_harness/*`)
+
+Per-tenant scoring-harness endpoints. **Reserved for the harness** — contract §4.2.4 says the bot MUST NOT call these. Always scoped to the caller's data (plus the canonical contract fixtures).
+
+| Method | Path | Purpose |
 | :--- | :--- | :--- |
-| Production | `https://api.clinic.example/v1` | Real patient data. |
-| Sandbox | `https://sandbox.api.clinic.example/v1` | Synthetic data; identical contract. |
-| Harness (per-key) | `https://{api,sandbox}.clinic.example/_harness/*` | Requires a bearer key; scoped to the caller's data; **never expose to end users**. |
+| `GET` | `/_harness/state` | Full snapshot: patients, slots, appointments. |
+| `GET` | `/_harness/patients` | Patients in caller's scope. |
+| `GET` | `/_harness/slots` | Slots in caller's scope. |
+| `GET` | `/_harness/appointments` | Appointments in caller's scope. |
+| `GET` | `/_harness/snapshot` | Capture current state, returns `snapshot_id`. |
+| `POST` | `/_harness/snapshot/{sid}/restore` | Reset to a prior snapshot. |
+| `POST` | `/_harness/seed` | Reset and seed canonical + per-tenant fixtures. |
+| `POST` | `/_harness/reset` | Flush and re-seed. |
+| `POST` | `/_harness/time-travel` | Advance the system clock by `seconds` (signed). |
 
-## 5. Pagination
-
-(same as before — cursor-based with `cursor` + `limit` 1..100)
-
-## 6. Rate Limiting
-
-**Not implemented in the current mock.** No request ever returns `429`, no `X-RateLimit-*` header is emitted, and no rate-limit middleware exists. This section reserves the contract: when implementation lands it will emit `X-RateLimit-{Limit,Remaining,Reset}` on every response and `Retry-After` on `429`. The `RateLimited` response component in `openapi.yaml` is documented-but-unused for the same reason.
-
-## 7. Errors
-
-### 7.1 Envelope
-
-(same envelope as before)
-
-### 7.2 Error Code Catalog
-
-| HTTP | Code | Meaning | Typical When |
-| :---: | :--- | :--- | :--- |
-| 400 | `VALIDATION_ERROR` | Request failed schema/format validation. | `details[]` names offending fields. |
-| 400 | `INVALID_ESCALATION_TARGET` | Escalate called without `staff_id` or `queue`. | `POST /calls/{id}/escalate`. |
-| 401 | `UNAUTHORIZED` | Missing, malformed, or unknown bearer token. | Carries `WWW-Authenticate: Bearer realm="clinic-mock"`. |
-| 403 | `FORBIDDEN` | Defined for the future case of per-scope grants; **unreachable in the current mock** (every valid key passes every scope guard). | Carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` when eventually wired. |
-| 404 | `NOT_FOUND` | Resource does not exist or is not visible to the caller. | |
-| 406 | `UNSUPPORTED_VERSION` | `Accept-Version` unknown or past sunset. | |
-| 409 | `SLOT_TAKEN` | The referenced `slot_id` is already reserved. | `POST /appointments`. |
-| 409 | `RESCHEDULE_SLOT_TAKEN` | The `new_slot_id` is already reserved. | `POST /appointments/{id}/reschedule`. |
-| 409 | `INVALID_STATE_TRANSITION` | Action not allowed from the current appointment status. | Lifecycle endpoints on terminal or incompatible states. |
-| 409 | `CALL_ALREADY_ENDED` | Write attempted against a terminal-state `Call`. | `PATCH /calls/{id}` and any `POST /calls/{id}/...` against `ESCALATED` or `ENDED_*`. |
-| 422 | `IDEMPOTENCY_CONFLICT` | Same `Idempotency-Key` reused with a different payload. | See [Idempotency](#8-idempotency). |
-| 429 | `RATE_LIMITED` | Reserved for future per-key rate limiting; **not currently returned** by the mock. | When implemented, will carry `Retry-After` and `X-RateLimit-*` headers. |
-| 500 | `INTERNAL_ERROR` | Unexpected server failure. | Safe to retry with exponential backoff and jitter. |
-| 503 | `SERVICE_UNAVAILABLE` | Temporary outage; safe to retry. | Carries `Retry-After`. |
-
-### 7.3 Validation Rules
-
-| Field | Rule |
-| :--- | :--- |
-| `phone`, `Patient.phone`, `from_number`, `to_number` | VN local 10-digit, mobile or landline: `` `^(02\|03\|05\|07\|08\|09)\d{8}$` `` |
-| `from`, `to` | RFC 3339 UTC (`...Z`). `to > from`. |
-| `from`/`to` window | ≤ 14 days. |
-| `date` | `YYYY-MM-DD`. |
-| `slot_id`, `patient_id`, `appointment_id`, `clinic_id`, `provider_id` | Opaque: `^[a-z]+_[A-Za-z0-9]+$` (prefix per resource). |
-| `call_id`, `staff_id` | Opaque: `^[a-z]+_[A-Za-z0-9]+$`. |
-| `notes` | ≤ 500 chars, UTF-8. |
-| `reason_code` (cancel) | One of `PATIENT_NO_SHOW`, `PROVIDER_REQUEST`, `CLINIC_REBOOK`, `OTHER`. |
-| `reason_code` (transfer) | One of `EQUIPMENT_FAILURE`, `PROVIDER_UNAVAILABLE`, `PATIENT_REQUEST`, `OTHER`. |
-| `reason_code` (escalate) | One of `TWO_FAILED_UNDERSTANDINGS`, `OFF_SCRIPT`, `PATIENT_REQUEST`, `OTHER`. |
-| `kind` (attempt) | One of `RINGOUT`, `VOICEMAIL`, `SILENT_TURN`. |
-| `outcome` (end) | One of `COMPLETED`, `NO_ANSWER`, `VOICEMAIL`, `FAILED`. |
-| `target_clinic_id` (transfer) | Must differ from the current `clinic_id`. |
-| `Idempotency-Key` | ≤ 255 chars. |
-
-## 8. Idempotency
-
-(same as before — 24h window, hash-based replay)
-
-## 9. Data Models
+## 5. Data Models
 
 ### `Patient`
 
 ```json
-{ "id": "p_12345", "first_name": "Jane", "last_name": "Doe", "phone": "+15551234567", "dob": "1985-04-12" }
+{
+  "patient_id": "pt_3391",
+  "display_name": "N. V. A.",
+  "phone": "0912345600",
+  "dob": "1978-03-14",
+  "verify": { "full_name": "Nguyễn Văn A", "dob": "1978-03-14" }
+}
+```
+
+### `PatientRef` (embedded in `Appointment`)
+
+```json
+{
+  "patient_id": "pt_3391",
+  "display_name": "N. V. A.",
+  "verify": { "full_name": "Nguyễn Văn A", "dob": "1978-03-14" }
+}
 ```
 
 ### `Slot`
 
 ```json
-{ "slot_id": "s_987", "clinic_id": "c_001", "start_time": "2026-09-15T09:00:00Z", "end_time": "2026-09-15T09:30:00Z", "provider_id": "pr_456" }
-```
-
-### `SlotRef`
-
-```json
-{ "start_time": "2026-09-15T09:00:00Z", "end_time": "2026-09-15T09:30:00Z", "clinic_id": "c_001" }
-```
-
-### `PatientRef`
-
-```json
-{ "id": "p_12345", "name": "Jane Doe", "phone": "+15551234567" }
-```
-
-### `Appointment`
-
-```json
-{ "id": "a_555", "status": "CONFIRMED", "slot": { "...": "SlotRef" }, "patient": { "...": "PatientRef" } }
-```
-
-`status` is one of: `PENDING`, `BOOKED`, `CONFIRMED`, `CANCELLED`, `TRANSFERRED`, `RESCHEDULED`, `COMPLETED`, `NO_SHOW`.
-
-### `Call`
-
-```json
 {
-  "id": "call_01HZ...",
-  "from_number": "0912345678",
-  "to_number": "0987654321",
-  "started_at": "2026-09-15T09:00:00Z",
-  "ended_at": null,
-  "status": "IN_PROGRESS",
-  "patient_id": "p_12345",
-  "verified": true,
-  "attempts": [ /* CallAttempt */ ],
-  "escalations": [ /* Escalation */ ],
-  "linked_appointment_ids": ["a_555"]
+  "slot_id": "slot_91d2",
+  "clinic_id": "cl_vinmec",
+  "start_time": "2026-10-14T15:00:00+07:00",
+  "end_time": "2026-10-14T15:30:00+07:00",
+  "provider_id": "pr_vinmec_1"
 }
 ```
 
-`Call.status` is one of:
-* `RINGING` — call created, not yet picked up by an agent.
-* `IN_PROGRESS` — agent is handling the call.
-* `ESCALATED` — transferred to staff; terminal.
-* `ENDED_NO_ANSWER` — call ended because nobody picked up; terminal.
-* `ENDED_VOICEMAIL` — call ended on voicemail; terminal.
-* `ENDED_COMPLETED` — call ended normally; terminal.
-* `ENDED_FAILED` — call ended due to error; terminal.
-
-### `CallAttempt`
-
-```json
-{ "kind": "RINGOUT", "at": "2026-09-15T09:00:30Z", "detail": null }
-```
-
-`kind` is one of: `RINGOUT` (ring out, no answer), `VOICEMAIL` (voicemail detected), `SILENT_TURN` (agent heard no speech on a turn — e.g. the three-silent-turns scenario).
-
-### `Escalation`
-
-```json
-{ "staff_id": "staff_42", "queue": null, "reason": "TWO_FAILED_UNDERSTANDINGS", "at": "2026-09-15T09:03:11Z" }
-```
-
-`reason` is one of: `TWO_FAILED_UNDERSTANDINGS`, `OFF_SCRIPT`, `PATIENT_REQUEST`, `OTHER`.
-
-## 10. Appointment Lifecycle
-
-(same diagram + matrix as before)
-
-## 11. Reason Code Enums
-
-### Cancel — `reason_code`
-
-| Code | When |
-| :--- | :--- |
-| `PATIENT_NO_SHOW` | Patient did not arrive for the scheduled slot. |
-| `PROVIDER_REQUEST` | Provider-initiated cancellation. |
-| `CLINIC_REBOOK` | Clinic rebooked the slot internally. |
-| `OTHER` | Anything else; supply a human-readable `notes` field. |
-
-### Transfer — `reason_code`
-
-| Code | When |
-| :--- | :--- |
-| `EQUIPMENT_FAILURE` | Equipment unavailable at the origin clinic. |
-| `PROVIDER_UNAVAILABLE` | Provider reassigned. |
-| `PATIENT_REQUEST` | Patient asked to be moved. |
-| `OTHER` | Anything else. |
-
-## 12. Endpoints
-
-### Discovery & Lookup
-
-#### `GET /patients`
-Finds patient records associated with an inbound caller.
-* **Scope:** `patients:read`
-* **Query:** `phone` (string, required, E.164).
-* **Response `200 OK`:** Paginated envelope of `Patient` (§9).
-
-#### `GET /slots`
-Retrieves genuinely open, bookable time slots. This is the **only** legal source for presenting availability to an inbound caller.
-* **Scope:** `slots:read`
-* **Query:** `clinic_id` (required), `from` (RFC 3339, required), `to` (RFC 3339, required, `to > from`, `to - from ≤ 14d`).
-* **Response `200 OK`:** Paginated envelope of `Slot` (§9).
-
-### Booking & Reading
-
-#### `POST /appointments`
-Creates one appointment, consuming an open slot.
-* **Scope:** `appointments:write`
-* **Idempotency:** Recommended — see [§8](#8-idempotency).
-* **Request body:**
-    ```json
-    { "patient_id": "p_12345", "slot_id": "s_987", "notes": "Patient reports mild fever." }
-    ```
-* **Response `201 Created`:** `Appointment` with `status = PENDING` (or `BOOKED`).
-* **Errors:** `400 VALIDATION_ERROR`, `404 NOT_FOUND` (patient or slot), `409 SLOT_TAKEN`, `422 IDEMPOTENCY_CONFLICT`, `429 RATE_LIMITED`.
-
-#### `GET /appointments/{id}`
-Reads a single appointment.
-* **Scope:** `appointments:read`
-* **Response `200 OK`:** `Appointment`.
-* **Errors:** `404 NOT_FOUND`.
-
-#### `GET /appointments`
-Generates the day's call list for a specific clinic, ordered by `slot.start_time`.
-* **Scope:** `appointments:read`
-* **Query:** `date` (`YYYY-MM-DD`, required), `clinic_id` (required), `cursor`, `limit`.
-* **Response `200 OK`:** Paginated envelope of `Appointment`.
-
-### Lifecycle
-
-#### `POST /appointments/{id}/confirm`
-Sets status to `CONFIRMED`. **Errors:** `409 INVALID_STATE_TRANSITION`.
-
-#### `POST /appointments/{id}/cancel`
-Sets status to `CANCELLED`; logs `reason_code`.
-* **Body:** `{ "reason_code": "PATIENT_NO_SHOW", "notes"?: "..." }`
-* **Errors:** `400 VALIDATION_ERROR`, `409 INVALID_STATE_TRANSITION`.
-
-#### `POST /appointments/{id}/transfer`
-Sets origin appointment to `TRANSFERRED`; creates a new appointment at `target_clinic_id`.
-* **Body:** `{ "target_clinic_id": "c_002", "reason_code": "EQUIPMENT_FAILURE" }`
-* **Errors:** `400 VALIDATION_ERROR`, `409 INVALID_STATE_TRANSITION`.
-
-#### `POST /appointments/{id}/reschedule`
-Atomically books `new_slot_id` and releases the old one. **Errors:** `400 VALIDATION_ERROR`, `409 RESCHEDULE_SLOT_TAKEN`, `409 INVALID_STATE_TRANSITION`.
-
-### Voice Calls
-
-The Calls API surfaces the voice-agent's call-mechanics contract. It is the API used to record identity verification, log no-answer attempts, and escalate to staff — distinct from the Appointment API which manages booking data.
-
-#### `POST /calls`
-Starts a new inbound call.
-* **Scope:** `calls:write`
-* **Request body:**
-    ```json
-    { "from_number": "+15551234567", "to_number": "+15559876543" }
-    ```
-* **Response `201 Created`:** `Call` object with `status = RINGING`.
-* **Webhooks:** `call.started`.
-
-#### `GET /calls/{id}`
-Reads current call state including attempts, escalations, and any appointments linked to the same verified patient.
-* **Scope:** `calls:read`
-* **Response `200 OK`:** `Call`.
-* **Errors:** `404 NOT_FOUND`.
-
-#### `PATCH /calls/{id}`
-Updates mid-call state. Typical use: after `GET /patients` returns a match, the agent sets `verified=true` and `patient_id`.
-* **Scope:** `calls:write`
-* **Request body:** any subset of `{ "verified", "patient_id", "status" }`.
-* **Response `200 OK`:** Updated `Call`.
-* **Errors:** `400 VALIDATION_ERROR`, `404 NOT_FOUND`, `409 CALL_ALREADY_ENDED`.
-
-#### `POST /calls/{id}/escalate`
-Transfers the live call to staff. This is the **transfer-to-staff** scenario: invoked when the agent goes off-script, after two consecutive failed understandings, on patient request, or for any other reason.
-* **Scope:** `calls:write`
-* **Request body:**
-    ```json
-    { "staff_id": "staff_42", "queue"?: "triage", "reason": "TWO_FAILED_UNDERSTANDINGS" }
-    ```
-    At least one of `staff_id` or `queue` is required.
-* **Response `200 OK`:** Updated `Call` with `status = ESCALATED` and a new `Escalation` appended.
-* **Webhooks:** `call.escalated`.
-* **Errors:** `400 INVALID_ESCALATION_TARGET` (neither `staff_id` nor `queue`), `400 VALIDATION_ERROR` (unknown `reason`), `404 NOT_FOUND`, `409 CALL_ALREADY_ENDED`.
-
-#### `POST /calls/{id}/attempts`
-Logs a no-answer event. The test scenarios distinguish ringing-out, voicemail, and three silent turns; the `kind` enum captures all three.
-* **Scope:** `calls:write`
-* **Request body:**
-    ```json
-    { "kind": "RINGOUT", "detail"?: "No pickup after 30s." }
-    ```
-* **Response `201 Created`:** Created `CallAttempt` entry; `Call.attempts` is appended to.
-* **Webhooks:** `call.no_answer` (only when this attempt drives the call into a terminal `ENDED_NO_ANSWER` or `ENDED_VOICEMAIL` state).
-* **Errors:** `400 VALIDATION_ERROR`, `404 NOT_FOUND`, `409 CALL_ALREADY_ENDED`.
-
-#### `POST /calls/{id}/end`
-Ends the call.
-* **Scope:** `calls:write`
-* **Request body:**
-    ```json
-    { "outcome": "COMPLETED", "reason"?: "..." }
-    ```
-* **Response `200 OK`:** Updated `Call` with terminal status (`ENDED_COMPLETED`, `ENDED_NO_ANSWER`, `ENDED_VOICEMAIL`, or `ENDED_FAILED`).
-* **Webhooks:** `call.ended`.
-* **Errors:** `400 VALIDATION_ERROR` (unknown `outcome`), `404 NOT_FOUND`, `409 CALL_ALREADY_ENDED`.
-
-#### Call Lifecycle
-
-`CALL_ALREADY_ENDED` is returned for any write against a call already in `ESCALATED` or `ENDED_*`. `RINGING` may transition to `IN_PROGRESS` via `PATCH`, or directly to a terminal state via `POST /calls/{id}/end`.
-
-| From \ Action | `PATCH` (`status`) | escalate | attempts | end |
-| :--- | :---: | :---: | :---: | :---: |
-| `RINGING` | ✓ → `IN_PROGRESS` | ✓ | ✓ | ✓ |
-| `IN_PROGRESS` | ✓ | ✓ | ✓ | ✓ |
-| `ESCALATED` | ✗ (`409 CALL_ALREADY_ENDED`) | ✗ | ✗ | ✗ |
-| `ENDED_NO_ANSWER` | ✗ | ✗ | ✗ | ✗ |
-| `ENDED_VOICEMAIL` | ✗ | ✗ | ✗ | ✗ |
-| `ENDED_COMPLETED` | ✗ | ✗ | ✗ | ✗ |
-| `ENDED_FAILED` | ✗ | ✗ | ✗ | ✗ |
-
-### Admin & Operations
-
-Endpoints for admins and automated test suites. **Never expose to end users.** Require a bearer key and are scoped to the caller's data (each key sees only its own data, even via `/state`).
-
-**State inspection (read-only):**
-
-| Method | Path | Purpose |
-| :--- | :--- | :--- |
-| `GET` | `/_harness/state` | Full snapshot: patients, slots, appointments, calls, escalations. |
-| `GET` | `/_harness/patients` | Filtered list of seeded patients. |
-| `GET` | `/_harness/slots` | Filtered list of slots (with optional `clinic_id`, `from`, `to`). |
-| `GET` | `/_harness/appointments` | Filtered list (with optional `clinic_id`, `date`, `status`). |
-| `GET` | `/_harness/calls` | Filtered list of calls (with optional `status`). |
-| `GET` | `/_harness/calls/{id}` | Single call with `attempts`, `escalations`, and `linked_appointment_ids`. |
-| `GET` | `/_harness/escalations` | All escalations across all calls, ordered by `at` desc. |
-
-**Snapshots (test isolation):**
-
-| Method | Path | Purpose |
-| :--- | :--- | :--- |
-| `GET` | `/_harness/snapshot` | Captures current state and returns a `snapshot_id`. |
-| `POST` | `/_harness/snapshot/{id}/restore` | Resets the mock to a prior snapshot without re-seeding. |
-
-**State mutation:**
-
-| Method | Path | Purpose |
-| :--- | :--- | :--- |
-| `POST` | `/_harness/seed` | Populates the database with mock clinics, providers, and open slots. Optional body overrides the fixture. |
-| `POST` | `/_harness/reset` | Flushes the database back to a zero state. |
-| `POST` | `/_harness/time-travel` | Simulates moving the system clock forward (useful for testing no-show logic). |
-
-## 13. Webhooks
-
-**Not implemented in the current mock.** The event shapes below are pinned here for the future emitter; no webhook is actually delivered today (no client, no delivery worker, no retries). The `webhooks:` block in `openapi.yaml` is declared-but-unused for the same reason.
-
-When the emitter lands: the platform pushes lifecycle events to a per-caller-configured HTTPS URL. Delivery is **at-least-once** with exponential backoff (1s, 5s, 30s, 5m, 30m, 2h, 12h, 24h — 8 attempts).
-
-### 13.1 Headers on Every Delivery
-
-| Header | Description |
-| :--- | :--- |
-| `X-Clinic-Event` | Event name (e.g. `appointment.confirmed`). |
-| `X-Clinic-Signature` | HMAC-SHA256 of the raw body keyed by the webhook secret; format `v1=<hex>`. |
-| `X-Clinic-Delivery-Id` | UUID; unique per attempt. |
-| `X-Clinic-Timestamp` | Unix timestamp of the send. |
-
-### 13.2 Event Catalog
-
-| Event | Fires after |
-| :--- | :--- |
-| `appointment.created` | `POST /appointments` |
-| `appointment.confirmed` | `POST /appointments/{id}/confirm` |
-| `appointment.cancelled` | `POST /appointments/{id}/cancel` |
-| `appointment.transferred` | `POST /appointments/{id}/transfer` |
-| `appointment.rescheduled` | `POST /appointments/{id}/reschedule` |
-| `call.started` | `POST /calls` |
-| `call.escalated` | `POST /calls/{id}/escalate` |
-| `call.no_answer` | `POST /calls/{id}/attempts` when the attempt drives the call into `ENDED_NO_ANSWER` or `ENDED_VOICEMAIL` |
-| `call.ended` | `POST /calls/{id}/end` |
-
-Each event body is the canonical resource plus a top-level `event` field:
+### `Appointment` (Listing 3 canonical shape)
 
 ```json
 {
-  "event": {
-    "name": "appointment.confirmed",
-    "id": "evt_01HZ...",
-    "occurred_at": "2026-09-15T09:05:22Z"
-  },
-  "appointment": { "...": "Appointment" }
+  "appointment_id": "apt_00417",
+  "status": "SCHEDULED",
+  "clinic_id": "cl_vinmec",
+  "starts_at": "2026-10-14T15:30:00+07:00",
+  "ends_at": "2026-10-14T16:00:00+07:00",
+  "department": "Nội tổng quát",
+  "patient": { "...": "PatientRef" },
+  "cancel_reason": null,
+  "transfer_reason": null,
+  "unreachable_reason": null,
+  "confirmed_at": null,
+  "confirmed_via": null,
+  "new_slot_id": null,
+  "attempt_count": 0,
+  "version": 3
 }
 ```
 
-For `call.*` events, `appointment` is replaced with the `Call` object.
+`status` is one of `SCHEDULED`, `BOOKED`, `CONFIRMED`, `CANCELLED`, `RESCHEDULED`, `TRANSFERRED`, `UNREACHABLE` (contract §2.2).
 
-Consumers must respond `2xx` within **5 seconds**; otherwise the delivery is retried.
+### `AppointmentRescheduleResponse` (Listing 4 minimal)
 
-## 14. Observability — Langfuse Traces
-
-The mock emits OpenTelemetry-compatible traces to Langfuse for every incoming API call. Tests read traces directly from Langfuse (`langfuse-cli`, the Langfuse SDK, or the Langfuse HTTP API); the mock does **not** expose a trace-polling endpoint.
-
-### 14.1 Configuration
-
-| Env Var | Required | Description |
-| :--- | :--- | :--- |
-| `LANGFUSE_PUBLIC_KEY` | yes (when traces enabled) | Project public key. |
-| `LANGFUSE_SECRET_KEY` | yes (when traces enabled) | Project secret key. |
-| `LANGFUSE_HOST` | yes (when traces enabled) | Langfuse host (e.g. `https://cloud.langfuse.com`, `https://us.cloud.langfuse.com`, or self-hosted). |
-| `LANGFUSE_ENVIRONMENT` | optional | Tag on every trace; default `sandbox`. Use to isolate concurrent test runs. |
-| `LANGFUSE_TRACES_ENABLED` | optional | `true` / `false`; default `true`. Set `false` to fully suppress trace emission (offline tests). |
-
-When `LANGFUSE_TRACES_ENABLED=false`, traces are dropped — not buffered on the mock. Tests that need tracing keep it enabled.
-
-### 14.2 Trace Shape
-
-**Resource attributes (every trace):**
-
-| Attribute | Value |
-| :--- | :--- |
-| `service.name` | `clinic-mock` |
-| `service.version` | from `pyproject.toml` |
-| `deployment.environment` | `LANGFUSE_ENVIRONMENT` (default `sandbox`) |
-
-**Span per incoming API call,** named `http.server.request`:
-
-| Attribute | Source |
-| :--- | :--- |
-| `http.request.method` | HTTP method |
-| `url.path` | Path with template variables (e.g. `/v1/appointments/{id}`) |
-| `url.template` | OTel URL template |
-| `http.route` | Resolved route pattern |
-| `http.response.status_code` | Response status |
-| `server.latency_ms` | Measured on the server |
-| `langfuse.caller.id` | Resolved from API key |
-| `langfuse.request.id` | Matches `X-Request-Id` (correlation key) |
-| `langfuse.api_key.last4` | Last four of the bearer key (sanitized) |
-
-**Semantic span events** are emitted on lifecycle mutations:
-
-| Span event | Fires on |
-| :--- | :--- |
-| `appointment.booked` | `POST /appointments` (success) |
-| `appointment.cancelled` | `POST /appointments/{id}/cancel` (success) |
-| `appointment.transferred` | `POST /appointments/{id}/transfer` (success) |
-| `appointment.rescheduled` | `POST /appointments/{id}/reschedule` (success) |
-| `call.started` | `POST /calls` (success) |
-| `call.escalated` | `POST /calls/{id}/escalate` (success) |
-| `call.no_answer` | `POST /calls/{id}/attempts` that drives the call to a terminal no-answer state |
-| `call.ended` | `POST /calls/{id}/end` (any `outcome`) |
-
-Each event carries the affected resource id (`appointment_id` / `call_id`) so tests can pivot from a trace to the matching entry in `/_harness/state`.
-
-### 14.3 Redaction (always on)
-
-These fields are **never** written into traces or span events:
-
-* `phone`, `Patient.phone`, `from_number`, `to_number`
-* `dob`
-* `notes`
-* `Authorization` request header
-
-Instead, the span emits a `request.body.redacted` event with a JSON-pointer list of redacted paths and a stable count. Span events that would contain these fields substitute the resource id only.
-
-### 14.4 Reading Traces from Tests
-
-Use `langfuse-cli` (no install — `npx langfuse-cli`) or the Langfuse SDK, filtered by:
-
-* Tag `service:clinic-mock` (auto-set from `service.name`).
-* `deployment.environment=<LANGFUSE_ENVIRONMENT>` to isolate runs.
-* Attribute `langfuse.request.id=<X-Request-Id>` for **deterministic per-request correlation** — given any request id, the matching trace is unique.
-
-```bash
-npx langfuse-cli api traces list \
-  --tag service:clinic-mock \
-  --filter 'metadata.deployment.environment=ci-run-42' \
-  --filter 'attributes."langfuse.request.id"=req_01HZ...'
+```json
+{
+  "status": "RESCHEDULED",
+  "new_slot_id": "slot_91d2",
+  "released_slot_id": "slot_77aa",
+  "version": 4
+}
 ```
 
-The test then pivots from a span event (e.g. `call.escalated` with `call_id=call_01HZ...`) to `GET /_harness/calls/{id}` to assert mock state. Tracing is for *what happened*; mock state is for *what is now true*.
+### `ErrorBody`
 
-## 15. Support
+```json
+{
+  "error": {
+    "code": "BAD_KEY",
+    "message": "Invalid bearer token.",
+    "request_id": "req_5bd34e12d76a",
+    "details": []
+  }
+}
+```
 
-| Resource | URL |
+## 6. Reason Code Enums (Appendix A)
+
+### Cancel — `cancel_reason`
+
+| Code | When |
 | :--- | :--- |
-| Status page | `https://status.clinic.example` |
-| Support email | `api-support@clinic.example` |
-| OpenAPI document | [`openapi.yaml`](openapi.yaml) |
-| Changelog | [`CHANGELOG.md`](CHANGELOG.md) |
+| `PATIENT_UNAVAILABLE` | Patient cannot attend at the scheduled time. |
+| `NO_LONGER_NEEDED` | Patient no longer requires the appointment. |
+| `WENT_ELSEWHERE` | Patient chose a different provider. |
+| `COST` | Price concerns. |
+| `UNSPECIFIED` | Catch-all. |
+
+### Transfer — `transfer_reason`
+
+| Code | When |
+| :--- | :--- |
+| `IDENTITY_FAILED` | §1.1.2 — caller could not verify identity. |
+| `PATIENT_NOT_FOUND` | §1.1.9 — no matching patient record on inbound. |
+| `OUT_OF_SCOPE` | §1.2.1/1.2.3 — clinical/financial/referral/prescription topic. |
+| `CLINICAL_QUESTION` | §1.2.1 — clinical question requiring a human. |
+| `NOT_UNDERSTOOD` | §1.1.5 — two consecutive failed understandings. |
+| `PATIENT_REQUEST` | Patient asked for a human. |
+| `SYSTEM_ERROR` | Bot internal failure. |
+
+### Unreachable — `unreachable_reason`
+
+| Code | When |
+| :--- | :--- |
+| `SILENCE` | Caller silent 3 turns in a row (scored path via `silence_ms`). |
+| `VOICEMAIL` | Voicemail greeting detected (scored path via clip). |
+| `NO_ANSWER` | No answer — live call week 6 only. |
+| `LINE_BUSY` | Line busy — live call week 6 only. |
+
+## 7. Validation Rules
+
+| Field | Rule |
+| :--- | :--- |
+| `phone`, `Patient.phone` | VN local 10-digit: `^(02|03|05|07|08|09)\d{8}$` |
+| `starts_at`, `ends_at`, `start_time`, `end_time` | RFC 3339 — `Z` or `±HH:MM` offset |
+| `dob` | `YYYY-MM-DD` |
+| `from`, `to` | RFC 3339. `to > from`, `to - from ≤ 14 days` |
+| `date` | `YYYY-MM-DD` |
+| `cancel_reason` | One of `PATIENT_UNAVAILABLE`, `NO_LONGER_NEEDED`, `WENT_ELSEWHERE`, `COST`, `UNSPECIFIED` |
+| `transfer_reason` | One of `IDENTITY_FAILED`, `PATIENT_NOT_FOUND`, `OUT_OF_SCOPE`, `CLINICAL_QUESTION`, `NOT_UNDERSTOOD`, `PATIENT_REQUEST`, `SYSTEM_ERROR` |
+| `unreachable_reason` | One of `SILENCE`, `VOICEMAIL`, `NO_ANSWER`, `LINE_BUSY` |
+| `requested_by` (reschedule) | One of `PATIENT`, `STAFF` |
+| `If-Match` | Integer ≥ 1 |
+| `Idempotency-Key` | ≤ 255 chars |
+
+## 8. Where Things Live
+
+```
+src/clinic_mock/
+├── main.py            # entry point: `uv run dev` / `uv run prod`
+├── app.py             # FastAPI app, middleware (auth, request-id)
+├── auth.py            # bearer-key parser; per-key isolation registry
+├── config.py          # pydantic-settings (loads .env)
+├── errors.py          # ApiError envelope + exception handlers
+├── lifecycle.py       # appointment state-transition guards (§2.2)
+├── logger.py          # loguru setup
+├── routes.py          # all v1 + harness + health routes
+├── schemas.py         # Pydantic models matching contract §2.2 + Appendix A
+├── store.py           # in-memory db + canonical + per-tenant seed fixtures
+└── tracing.py         # Langfuse OTel instrumentation
+```
+
+`docs/APIs.md` is the source of truth for the contract; the code is the
+source of truth for behavior. The contract at
+[callbot-contract-site.vercel.app](https://callbot-contract-site.vercel.app/)
+is the source of truth for the contract — where this spec disagrees with it,
+the contract wins.

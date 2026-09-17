@@ -29,13 +29,14 @@ class ApiError(HTTPException):
 def validation_error(
     message: str, details: list[dict[str, Any]] | None = None
 ) -> ApiError:
-    return ApiError(400, "VALIDATION_ERROR", message, details=details)
+    return ApiError(400, "INVALID_REQUEST", message, details=details)
 
 
 def unauthorized() -> ApiError:
+    """401 BAD_KEY per contract Appendix A. Function name kept for callers."""
     return ApiError(
         401,
-        "UNAUTHORIZED",
+        "BAD_KEY",
         "Missing or invalid bearer token.",
         headers={"WWW-Authenticate": 'Bearer realm="clinic-mock"'},
     )
@@ -58,6 +59,22 @@ def not_found(what: str) -> ApiError:
 
 def conflict(code: str, message: str) -> ApiError:
     return ApiError(409, code, message)
+
+
+def version_conflict(current: int | None = None) -> ApiError:
+    """409 VERSION_CONFLICT — If-Match header didn't match the current version."""
+    details = [{"field": "version", "value": current}] if current is not None else None
+    return ApiError(
+        409,
+        "VERSION_CONFLICT",
+        "If-Match version does not match current state.",
+        details=details,
+    )
+
+
+def confirmation_required(reason: str) -> ApiError:
+    """409 CONFIRMATION_REQUIRED — §3.5 SF-05: cancel needs explicit second confirmation."""
+    return ApiError(409, "CONFIRMATION_REQUIRED", reason)
 
 
 def unprocessable(code: str, message: str) -> ApiError:
@@ -84,7 +101,7 @@ async def generic_http_handler(request: Request, exc: HTTPException) -> JSONResp
     """Map plain HTTPExceptions (e.g. raised by FastAPI itself) into the envelope."""
     request_id = getattr(request.state, "request_id", None)
     code_map = {
-        401: "UNAUTHORIZED",
+        401: "BAD_KEY",
         403: "FORBIDDEN",
         404: "NOT_FOUND",
         405: "METHOD_NOT_ALLOWED",
