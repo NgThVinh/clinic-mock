@@ -36,13 +36,21 @@ from clinic_mock.schemas import (
     AppointmentRescheduleResponse,
     CancelRequest,
     Patient,
+    PatientCreate,
+    PatientVerify,
     RescheduleRequest,
     Slot,
     TransferRequest,
     UnreachableRequest,
     WriteHeaders,
 )
-from clinic_mock.store import CANONICAL_TENANT, db, now_iso, seed_default
+from clinic_mock.store import (
+    CANONICAL_TENANT,
+    db,
+    now_iso,
+    provider_metadata,
+    seed_default,
+)
 
 
 def _tenant(request: Request) -> str:
@@ -148,6 +156,75 @@ def find_patients(
     return {"data": page, "next_cursor": next_cursor, "has_more": has_more}
 
 
+@v1.post("/patients", status_code=status.HTTP_201_CREATED, tags=["Patients"])
+def create_patient(
+    request: Request,
+    body: PatientCreate,
+    headers: Annotated[WriteHeaders, Depends(write_headers)],
+):
+    """Create a patient in the authenticated tenant.
+
+    Phone is discovery metadata only; creating a record does not verify a
+    caller's identity. Replayed requests return the original patient record.
+    """
+
+    tenant = _tenant(request)
+    payload = body.model_dump()
+    if headers.idempotency_key:
+        replay = _idempotent_check(
+            headers.idempotency_key,
+            "POST /v1/patients",
+            payload,
+        )
+        if replay is not None:
+            return Response(
+                content=json.dumps(replay["body"]),
+                status_code=replay["status"],
+                headers={
+                    "Idempotent-Replayed": "true",
+                    "Content-Type": "application/json",
+                },
+            )
+
+    first_name = body.first_name.strip()
+    last_name = body.last_name.strip()
+    address = body.address.strip()
+    if not first_name or not last_name or not address:
+        raise validation_error("first_name, last_name and address must not be blank.")
+    if any(
+        patient.tenant_id == tenant and patient.phone == body.phone
+        for patient in db.patients.values()
+    ):
+        raise conflict(
+            "PATIENT_PHONE_EXISTS",
+            "A patient with this phone already exists in the tenant.",
+        )
+
+    patient = Patient(
+        patient_id=db.new_id("p"),
+        tenant_id=tenant,
+        display_name=f"{first_name} {last_name[0]}.",
+        phone=body.phone,
+        dob=body.dob,
+        address=address,
+        verify=PatientVerify(
+            full_name=f"{last_name} {first_name}",
+            dob=body.dob,
+        ),
+    )
+    db.patients[patient.patient_id] = patient
+    response_body = patient.model_dump()
+    if headers.idempotency_key:
+        _idempotent_store(
+            headers.idempotency_key,
+            "POST /v1/patients",
+            payload,
+            status.HTTP_201_CREATED,
+            response_body,
+        )
+    return response_body
+
+
 @v1.get("/slots", tags=["Discovery"])
 def list_slots(
     request: Request,
@@ -218,11 +295,12 @@ def create_appointment(
         tenant_id=tenant,
         slot_id=slot.slot_id,
         provider_id=slot.provider_id,
+        provider_name=slot.provider_name,
         status="BOOKED",
         clinic_id=slot.clinic_id,
         starts_at=slot.start_time,
         ends_at=slot.end_time,
-        department="Tổng quát",
+        department=slot.department,
         patient=_patient_ref(patient),
         attempt_count=0,
         version=1,
@@ -348,6 +426,17 @@ def cancel_appointment(
         }
     )
     db.appointments[appt_id] = updated
+    # Cancellation releases the consumed slot so another patient can book it.
+    db.slots[appt.slot_id] = Slot(
+        slot_id=appt.slot_id,
+        tenant_id=appt.tenant_id,
+        clinic_id=appt.clinic_id,
+        start_time=appt.starts_at,
+        end_time=appt.ends_at,
+        provider_id=appt.provider_id,
+        provider_name=appt.provider_name or provider_metadata(appt.provider_id)["name"],
+        department=appt.department,
+    )
     if headers.idempotency_key:
         _idempotent_store(
             headers.idempotency_key,
@@ -431,6 +520,8 @@ def reschedule_appointment(
             start_time=appt.starts_at,
             end_time=appt.ends_at,
             provider_id=appt.provider_id,
+            provider_name=appt.provider_name or provider_metadata(appt.provider_id)["name"],
+            department=appt.department,
         )
     db.slots.pop(new_slot.slot_id, None)
 
@@ -439,10 +530,12 @@ def reschedule_appointment(
         update={
             "slot_id": new_slot.slot_id,
             "provider_id": new_slot.provider_id,
+            "provider_name": new_slot.provider_name,
             "status": "RESCHEDULED",
             "clinic_id": new_slot.clinic_id,
             "starts_at": new_slot.start_time,
             "ends_at": new_slot.end_time,
+            "department": new_slot.department,
             "new_slot_id": new_slot.slot_id,
             "version": new_version,
         }

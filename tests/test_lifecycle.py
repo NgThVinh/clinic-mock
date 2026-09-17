@@ -98,6 +98,20 @@ class TestCancel:
         assert body["status"] == "CANCELLED"
         assert body["cancel_reason"] == "PATIENT_UNAVAILABLE"
         assert body["version"] == APPT_VERSION + 1
+        released = client.get(
+            "/v1/slots",
+            params={
+                "clinic_id": "cl_vinmec",
+                "from": "2026-10-14T15:30:00+07:00",
+                "to": "2026-10-14T16:30:00+07:00",
+            },
+            headers=AUTH_A,
+        )
+        assert released.status_code == 200
+        assert any(
+            slot["start_time"] == "2026-10-14T15:30:00+07:00"
+            for slot in released.json()["data"]
+        )
 
     def test_cancel_without_confirmation_returns_409(self, client):
         r = client.post(
