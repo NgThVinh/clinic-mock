@@ -40,6 +40,8 @@ from clinic_mock.schemas import (
     EscalateRequest,
     Escalation,
     PatientRef,
+    Patient,
+    PatientCreate,
     RescheduleRequest,
     Slot,
     SlotRef,
@@ -108,7 +110,9 @@ def health_check() -> dict[str, str]:
 @v1.get("/patients", tags=["Discovery"])
 def find_patients(
     request: Request,
-    phone: Annotated[str, Query(pattern=r"^(02|03|05|07|08|09)\d{8}$")],
+    phone: Annotated[
+        str | None, Query(pattern=r"^(02|03|05|07|08|09)\d{8}$")
+    ] = None,
     cursor: str | None = None,
     limit: int = 25,
 ):
@@ -116,10 +120,24 @@ def find_patients(
     matched = [
         p.model_dump()
         for p in db.patients.values()
-        if p.tenant_id == tenant and p.phone == phone
+        if p.tenant_id == tenant and (phone is None or p.phone == phone)
     ]
     page, next_cursor, has_more = paginate(matched, cursor, limit)
     return {"data": page, "next_cursor": next_cursor, "has_more": has_more}
+
+
+@v1.post("/patients", status_code=status.HTTP_201_CREATED, tags=["Discovery"])
+def create_patient(request: Request, body: PatientCreate):
+    tenant = _tenant(request)
+    if any(
+        patient.tenant_id == tenant and patient.phone == body.phone
+        for patient in db.patients.values()
+    ):
+        raise conflict("PATIENT_PHONE_EXISTS", "A patient with this phone already exists.")
+    patient_id = db.new_id("p")
+    patient = Patient(id=patient_id, tenant_id=tenant, **body.model_dump())
+    db.patients[patient_id] = patient
+    return patient.model_dump()
 
 
 @v1.get("/slots", tags=["Discovery"])
@@ -224,8 +242,10 @@ def get_appointment(
 @v1.get("/appointments", tags=["Appointments"])
 def list_appointments(
     request: Request,
-    date: Annotated[str, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")],
-    clinic_id: str,
+    date: Annotated[
+        str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    ] = None,
+    clinic_id: str | None = None,
     cursor: str | None = None,
     limit: int = 25,
 ):
@@ -234,8 +254,8 @@ def list_appointments(
         a.model_dump()
         for a in db.appointments.values()
         if a.tenant_id == tenant
-        and a.slot.clinic_id == clinic_id
-        and a.slot.start_time.startswith(date)
+        and (clinic_id is None or a.slot.clinic_id == clinic_id)
+        and (date is None or a.slot.start_time.startswith(date))
     ]
     matched.sort(key=lambda a: a["slot"]["start_time"])
     page, next_cursor, has_more = paginate(matched, cursor, limit)
@@ -353,6 +373,22 @@ def get_call(
     if not call or call.tenant_id != _tenant(request):
         raise not_found(f"call {call_id}")
     return call.model_dump()
+
+
+@v1.get("/calls", tags=["Calls"])
+def list_calls(
+    request: Request,
+    cursor: str | None = None,
+    limit: int = 25,
+):
+    tenant = _tenant(request)
+    matched = [
+        call.model_dump()
+        for call in db.calls.values()
+        if call.tenant_id == tenant
+    ]
+    page, next_cursor, has_more = paginate(matched, cursor, limit)
+    return {"data": page, "next_cursor": next_cursor, "has_more": has_more}
 
 
 @v1.patch("/calls/{call_id}", tags=["Calls"])

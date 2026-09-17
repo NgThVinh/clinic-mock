@@ -105,6 +105,62 @@ PATIENT_FIXTURES = [
         "phone": "0987654321",
         "dob": "1972-11-03",
     },
+    {
+        "id": "p_10001",
+        "first_name": "An",
+        "last_name": "Ph\u1ea1m Minh",
+        "phone": "0323456789",
+        "dob": "1992-02-18",
+    },
+    {
+        "id": "p_10002",
+        "first_name": "Lan",
+        "last_name": "V\u00f5 Th\u1ecb",
+        "phone": "0567890123",
+        "dob": "1988-07-09",
+    },
+    {
+        "id": "p_10003",
+        "first_name": "Minh",
+        "last_name": "Nguy\u1ec5n V\u0103n",
+        "phone": "0901112233",
+        "dob": "1995-06-15",
+    },
+    {
+        "id": "p_10004",
+        "first_name": "Minh",
+        "last_name": "Nguy\u1ec5n V\u0103n",
+        "phone": "0901112244",
+        "dob": "1995-06-15",
+    },
+    {
+        "id": "p_10005",
+        "first_name": "H\u01b0\u01a1ng",
+        "last_name": "\u0110\u1ed7 Thu",
+        "phone": "0765432109",
+        "dob": "2000-12-24",
+    },
+    {
+        "id": "p_10006",
+        "first_name": "Khang",
+        "last_name": "B\u00f9i Qu\u1ed1c",
+        "phone": "0812345679",
+        "dob": "1997-03-05",
+    },
+    {
+        "id": "p_10007",
+        "first_name": "Th\u1ea3o",
+        "last_name": "Tr\u01b0\u01a1ng Ng\u1ecdc",
+        "phone": "0934567890",
+        "dob": "1990-10-21",
+    },
+    {
+        "id": "p_10008",
+        "first_name": "Ph\u00fac",
+        "last_name": "Ho\u00e0ng Gia",
+        "phone": "0398765432",
+        "dob": "1983-08-30",
+    },
 ]
 
 SLOT_FIXTURES = [
@@ -130,6 +186,69 @@ SLOT_FIXTURES = [
         "provider_id": "pr_789",
     },
 ]
+
+WORKDAY_SLOT_DATES = [
+    "2026-09-17",
+    "2026-09-18",
+    "2026-09-21",
+    "2026-09-22",
+    "2026-09-23",
+    "2026-09-24",
+    "2026-09-25",
+    "2026-09-28",
+    "2026-09-29",
+    "2026-09-30",
+    "2026-10-01",
+    "2026-10-02",
+    "2026-10-05",
+    "2026-10-06",
+    "2026-10-07",
+    "2026-10-08",
+    "2026-10-09",
+    "2026-10-12",
+    "2026-10-13",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22",
+    "2026-10-23",
+    "2026-10-26",
+    "2026-10-27",
+    "2026-10-28",
+    "2026-10-29",
+    "2026-10-30",
+]
+
+for fixture_date in WORKDAY_SLOT_DATES:
+    compact_date = fixture_date.replace("-", "")
+    SLOT_FIXTURES.extend(
+        [
+            {
+                "slot_id": f"s_{compact_date}_0900",
+                "clinic_id": "c_001",
+                "start_time": f"{fixture_date}T09:00:00Z",
+                "end_time": f"{fixture_date}T09:30:00Z",
+                "provider_id": "pr_456",
+            },
+            {
+                "slot_id": f"s_{compact_date}_0930",
+                "clinic_id": "c_001",
+                "start_time": f"{fixture_date}T09:30:00Z",
+                "end_time": f"{fixture_date}T10:00:00Z",
+                "provider_id": "pr_456",
+            },
+            {
+                "slot_id": f"s_{compact_date}_1100",
+                "clinic_id": "c_002",
+                "start_time": f"{fixture_date}T11:00:00Z",
+                "end_time": f"{fixture_date}T11:30:00Z",
+                "provider_id": "pr_789",
+            },
+        ]
+    )
 
 
 def _seed_tenants() -> list[str]:

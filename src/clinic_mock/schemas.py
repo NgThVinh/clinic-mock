@@ -29,6 +29,13 @@ class Patient(BaseModel):
     dob: IsoDate
 
 
+class PatientCreate(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    phone: Phone
+    dob: IsoDate
+
+
 class Slot(BaseModel):
     slot_id: str
     tenant_id: str = Field(exclude=True)
