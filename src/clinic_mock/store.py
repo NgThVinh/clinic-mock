@@ -11,7 +11,7 @@ keep the existing suffix trick so isolation tests still see distinct rows.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from clinic_mock.auth import derive_tenant_id
 from clinic_mock.schemas import (
@@ -120,6 +120,20 @@ PATIENT_FIXTURES = [
     },
 ]
 
+PATIENT_FIXTURES.extend(
+    [
+        {"id": "p_sample_01", "display_name": "An L.", "phone": "0901234567", "dob": "1990-05-20", "verify": {"full_name": "L\u00ea V\u0103n An", "dob": "1990-05-20"}},
+        {"id": "p_sample_02", "display_name": "D\u0169ng L.", "phone": "0862619836", "dob": "2005-01-30", "verify": {"full_name": "L\u00ea C\u00f4ng D\u0169ng", "dob": "2005-01-30"}},
+        {"id": "p_sample_03", "display_name": "H\u00e0 P.", "phone": "0321456789", "dob": "1996-08-15", "verify": {"full_name": "Ph\u1ea1m Thu H\u00e0", "dob": "1996-08-15"}},
+        {"id": "p_sample_04", "display_name": "Minh H.", "phone": "0387654321", "dob": "1988-12-09", "verify": {"full_name": "Ho\u00e0ng Quang Minh", "dob": "1988-12-09"}},
+        {"id": "p_sample_05", "display_name": "Lan V.", "phone": "0702345678", "dob": "1993-03-24", "verify": {"full_name": "V\u0169 Ng\u1ecdc Lan", "dob": "1993-03-24"}},
+        {"id": "p_sample_06", "display_name": "H\u00f9ng \u0110.", "phone": "0793456789", "dob": "1982-07-11", "verify": {"full_name": "\u0110\u1eb7ng M\u1ea1nh H\u00f9ng", "dob": "1982-07-11"}},
+        {"id": "p_sample_07", "display_name": "Trang B.", "phone": "0834567890", "dob": "2000-10-02", "verify": {"full_name": "B\u00f9i Thu Trang", "dob": "2000-10-02"}},
+        {"id": "p_sample_08", "display_name": "Khoa N.", "phone": "0895678901", "dob": "1999-06-18", "verify": {"full_name": "Nguy\u1ec5n Minh Khoa", "dob": "1999-06-18"}},
+    ]
+)
+
+
 SLOT_FIXTURES = [
     {
         "slot_id": "s_987",
@@ -146,13 +160,43 @@ SLOT_FIXTURES = [
 
 # Canonical contract fixtures — Listing 3/4. Seeded once under t_canonical
 # and visible to all tenants. apt_00417 consumes slot_77aa (NOT in db.slots).
+# Three slots matching the original sample schedule on every weekday from
+# 17/09/2026 through 30/10/2026 (inclusive). These fixtures are recreated
+# whenever the in-memory mock starts or resets.
+_schedule_start = date(2026, 9, 17)
+_schedule_end = date(2026, 10, 30)
+_schedule_templates = (
+    ("0900", "c_001", "09:00:00Z", "09:30:00Z", "pr_456"),
+    ("0930", "c_001", "09:30:00Z", "10:00:00Z", "pr_456"),
+    ("1100", "c_002", "11:00:00Z", "11:30:00Z", "pr_789"),
+)
+_schedule_day = _schedule_start
+while _schedule_day <= _schedule_end:
+    if _schedule_day.weekday() < 5:
+        day_token = _schedule_day.strftime("%Y%m%d")
+        day_iso = _schedule_day.isoformat()
+        SLOT_FIXTURES.extend(
+            {
+                "slot_id": f"s_{day_token}_{time_token}",
+                "clinic_id": clinic_id,
+                "start_time": f"{day_iso}T{start_time}",
+                "end_time": f"{day_iso}T{end_time}",
+                "provider_id": provider_id,
+            }
+            for time_token, clinic_id, start_time, end_time, provider_id in (
+                _schedule_templates
+            )
+        )
+    _schedule_day += timedelta(days=1)
+
+
 CANONICAL_PATIENT_FIXTURES = [
     {
         "id": "pt_3391",
         "display_name": "N. V. A.",
         "phone": "0912345600",
         "dob": "1978-03-14",
-        "verify": {"full_name": "Nguyễn Văn A", "dob": "1978-03-14"},
+        "verify": {"full_name": "Nguyễn Văn An", "dob": "1978-03-14"},
     },
 ]
 
