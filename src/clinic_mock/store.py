@@ -22,14 +22,79 @@ from clinic_mock.schemas import (
     Slot,
 )
 
-
 # Tenant id under which contract canonical fixtures live. Read by the route
 # helpers to widen the tenant filter — see _visible_tenants() in routes.py.
 CANONICAL_TENANT = "t_canonical"
 
 
+# /v1/* path → semantic operation name. Used by the writelog middleware to tag
+# each captured write with a stable op label that the scoring harness can match
+# against expected SF-detection rules (e.g. SF-01: "did the bot write to the
+# wrong appointment?").
+WRITELOG_PATH_OPS: dict[str, str] = {
+    "/v1/appointments": "create_appointment",
+    "confirm": "confirm",
+    "cancel": "cancel",
+    "transfer": "transfer",
+    "reschedule": "reschedule",
+    "unreachable": "unreachable",
+}
+
+
 def now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def derive_writelog_op(method: str, path: str) -> str | None:
+    """Map (method, path) to a semantic writelog `op` label.
+
+    Returns None for non-v1 paths (the writelog middleware skips those).
+    """
+    if not path.startswith("/v1/"):
+        return None
+    norm = path.rstrip("/")
+    if method == "POST" and norm == "/v1/appointments":
+        return "create_appointment"
+    parts = norm.strip("/").split("/")
+    # /v1/appointments/<id>/<action>
+    if (
+        len(parts) >= 4
+        and parts[0] == "v1"
+        and parts[1] == "appointments"
+        and parts[3] in WRITELOG_PATH_OPS
+    ):
+        return parts[3]
+    return None
+
+
+class WriteLog:
+    """Append-only log of every /v1/* mutation the mock received.
+
+    Reset by `/_harness/reset`. Read back by `GET /_harness/writelog` for the
+    scoring harness (§4.3 step 5). Captures request body + response status
+    so the harness can verify writes against expected behaviour.
+    """
+
+    def __init__(self) -> None:
+        self.entries: list[dict] = []
+
+    def append(self, entry: dict) -> None:
+        self.entries.append(entry)
+
+    def reset(self) -> None:
+        self.entries = []
+
+    def query(
+        self,
+        op: str | None = None,
+        appointment_id: str | None = None,
+    ) -> list[dict]:
+        out = self.entries
+        if op is not None:
+            out = [e for e in out if e.get("op") == op]
+        if appointment_id is not None:
+            out = [e for e in out if e.get("appointment_id") == appointment_id]
+        return out
 
 
 class Store:
@@ -38,6 +103,7 @@ class Store:
         self.slots: dict[str, Slot] = {}
         self.appointments: dict[str, Appointment] = {}
         self.snapshots: dict[str, dict] = {}
+        self.writelog: WriteLog = WriteLog()
         self.system_clock_offset_sec: int = 0
 
     def now(self) -> datetime:
@@ -54,10 +120,29 @@ class Store:
 
     def snapshot(self) -> str:
         sid = self.new_id("snap")
+        # Internal snapshots need `tenant_id` (and any other Field(exclude=True)
+        # marker) to round-trip through Pydantic validation. model_dump() drops
+        # them by default and exclude=set() does NOT override the field-level
+        # exclude=True, so we re-inject the markers explicitly.
         self.snapshots[sid] = {
-            "patients": {k: v.model_dump() for k, v in self.patients.items()},
-            "slots": {k: v.model_dump() for k, v in self.slots.items()},
-            "appointments": {k: v.model_dump() for k, v in self.appointments.items()},
+            "patients": {
+                k: {**v.model_dump(), "tenant_id": v.tenant_id}
+                for k, v in self.patients.items()
+            },
+            "slots": {
+                k: {**v.model_dump(), "tenant_id": v.tenant_id}
+                for k, v in self.slots.items()
+            },
+            "appointments": {
+                k: {
+                    **v.model_dump(),
+                    "tenant_id": v.tenant_id,
+                    "slot_id": v.slot_id,
+                    "provider_id": v.provider_id,
+                }
+                for k, v in self.appointments.items()
+            },
+            "writelog": list(self.writelog.entries),
             "system_clock_offset_sec": self.system_clock_offset_sec,
         }
         return sid
@@ -73,6 +158,8 @@ class Store:
         self.appointments = {
             k: Appointment(**v) for k, v in snap["appointments"].items()
         }
+        self.writelog = WriteLog()
+        self.writelog.entries = list(snap.get("writelog", []))
         self.system_clock_offset_sec = snap["system_clock_offset_sec"]
 
     def dump(self) -> dict:

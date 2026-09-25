@@ -621,6 +621,34 @@ def harness_appointments(request: Request):
     return [a.model_dump() for a in db.appointments.values() if a.tenant_id in tenants]
 
 
+@harness.get("/writelog", tags=["Admin"])
+def harness_writelog(
+    request: Request,
+    op: Annotated[str | None, Query(description="Filter by op label")] = None,
+    appointment_id: Annotated[
+        str | None, Query(description="Filter by affected appointment id")
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=10000)] = 1000,
+):
+    """Append-only log of every /v1/* mutation since the last reset (§4.3 step 5).
+
+    The scoring harness reads this to detect SF-01 (write to wrong appointment),
+    SF-02 (offer slot not returned by /slots), and SF-05 (cancel without the
+    second confirmation — visible as a 409 entry). Captures request body,
+    status, If-Match and Idempotency-Key on each write.
+    """
+    _tenant(request)  # auth gate
+    entries = db.writelog.query(
+        op=op,
+        appointment_id=appointment_id,
+    )
+    return {
+        "entries": entries[:limit],
+        "count": len(entries),
+        "truncated": len(entries) > limit,
+    }
+
+
 @harness.get("/snapshot", tags=["Admin"])
 def harness_snapshot(request: Request):
     sid = db.snapshot()

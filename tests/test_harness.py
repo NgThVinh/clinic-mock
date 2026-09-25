@@ -3,8 +3,6 @@
 Per-tenant scoped. Requires auth. Used by the scoring harness only.
 """
 
-import pytest
-
 from tests.conftest import AUTH_A, AUTH_B, write_headers
 
 
@@ -49,11 +47,6 @@ class TestHarnessCollections:
 
 
 class TestHarnessSnapshot:
-    @pytest.mark.xfail(
-        reason="model_dump() excludes tenant_id/slot_id/provider_id (Field(exclude=True)), "
-        "so snapshot cannot reconstruct models on restore",
-        strict=True,
-    )
     def test_snapshot_and_restore(self, client):
         snap = client.get("/_harness/snapshot", headers=AUTH_A)
         assert snap.status_code == 200

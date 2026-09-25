@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
@@ -83,6 +84,62 @@ def create_app() -> FastAPI:
 
         response = await call_next(request)
         response.headers["X-Request-Id"] = rid
+        return response
+
+    @app.middleware("http")
+    async def writelog_middleware(request: Request, call_next):
+        """Capture every /v1/* mutation into db.writelog (contract §4.3 step 5).
+
+        Captures the request body once (Starlette caches it for downstream
+        handlers), then appends an entry with method/path/status/body and key
+        headers after the handler runs. Non-/v1 paths and pure GETs are skipped.
+        """
+        from clinic_mock.store import db, derive_writelog_op, now_iso
+
+        method = request.method
+        path = request.url.path
+        op = derive_writelog_op(method, path)
+        capture = op is not None
+
+        body_bytes = b""
+        if capture:
+            body_bytes = await request.body()  # cached by Starlette
+
+        response = await call_next(request)
+
+        if capture:
+            entry: dict = {
+                "at": now_iso(),
+                "op": op,
+                "method": method,
+                "path": path,
+                "status": response.status_code,
+            }
+            try:
+                entry["body"] = json.loads(body_bytes) if body_bytes else None
+            except (json.JSONDecodeError, ValueError):
+                entry["body"] = None
+            if_match = request.headers.get("If-Match")
+            if if_match:
+                try:
+                    entry["if_match"] = int(if_match)
+                except ValueError:
+                    entry["if_match"] = if_match
+            idem = request.headers.get("Idempotency-Key")
+            if idem:
+                entry["idempotency_key"] = idem
+            # /v1/appointments/<id>[/<action>] — capture the affected appointment id.
+            parts = path.rstrip("/").strip("/").split("/")
+            if (
+                len(parts) >= 3
+                and parts[0] == "v1"
+                and parts[1] == "appointments"
+                and parts[2]
+                and parts[2] != "appointments"
+            ):
+                entry["appointment_id"] = parts[2]
+            db.writelog.append(entry)
+
         return response
 
     @app.exception_handler(ApiError)
