@@ -36,6 +36,9 @@ from clinic_mock.schemas import (
     AppointmentRescheduleResponse,
     CancelRequest,
     Patient,
+    PatientCreate,
+    PatientUpdate,
+    PatientVerify,
     RescheduleRequest,
     Slot,
     TransferRequest,
@@ -62,6 +65,11 @@ def _visible_tenants(caller_tenant: str) -> set[str]:
     isolated to their own tenant.
     """
     return {caller_tenant, CANONICAL_TENANT}
+
+
+def _writable_tenants(caller_tenant: str) -> set[str]:
+    """Tenants whose data the caller can mutate. Canonical fixtures are read-only."""
+    return {caller_tenant}
 
 
 def write_headers(
@@ -531,8 +539,73 @@ def harness_state(request: Request):
 
 @harness.get("/patients", tags=["Admin"])
 def harness_patients(request: Request):
+    """List patients visible to the caller (own scope + canonical fixtures)."""
     tenants = _visible_tenants(_tenant(request))
     return [p.model_dump() for p in db.patients.values() if p.tenant_id in tenants]
+
+
+@harness.post(
+    "/patients", status_code=status.HTTP_201_CREATED, tags=["Admin"]
+)
+def create_patient(
+    request: Request,
+    body: PatientCreate,
+):
+    """Create a patient in the caller's tenant scope.
+
+    Canonical contract fixtures are read-only; this endpoint always assigns a
+    server-generated `patient_id` under the caller's tenant.
+    """
+    tenant = _tenant(request)
+    new_pid = db.new_id("pt")
+    patient = Patient(
+        patient_id=new_pid,
+        tenant_id=tenant,
+        display_name=body.display_name,
+        phone=body.phone,
+        dob=body.dob,
+        verify=body.verify,
+    )
+    db.patients[new_pid] = patient
+    return patient.model_dump()
+
+
+@harness.patch("/patients/{patient_id}", tags=["Admin"])
+def update_patient(
+    request: Request,
+    patient_id: str,
+    body: PatientUpdate,
+):
+    """Partially update a patient. Canonical fixtures are hidden (404)."""
+    tenant = _tenant(request)
+    patient = db.patients.get(patient_id)
+    if not patient or patient.tenant_id not in _writable_tenants(tenant):
+        raise not_found(f"patient {patient_id}")
+    updates: dict = {}
+    if body.display_name is not None:
+        updates["display_name"] = body.display_name
+    if body.phone is not None:
+        updates["phone"] = body.phone
+    if body.dob is not None:
+        updates["dob"] = body.dob
+    if body.verify is not None:
+        updates["verify"] = body.verify
+    if not updates:
+        return patient.model_dump()  # no-op PATCH is OK
+    updated = patient.model_copy(update=updates)
+    db.patients[patient_id] = updated
+    return updated.model_dump()
+
+
+@harness.delete("/patients/{patient_id}", tags=["Admin"])
+def delete_patient(request: Request, patient_id: str):
+    """Delete a patient from the caller's tenant scope. Canonical fixtures hidden (404)."""
+    tenant = _tenant(request)
+    patient = db.patients.get(patient_id)
+    if not patient or patient.tenant_id not in _writable_tenants(tenant):
+        raise not_found(f"patient {patient_id}")
+    db.patients.pop(patient_id)
+    return {"deleted": patient_id}
 
 
 @harness.get("/slots", tags=["Admin"])

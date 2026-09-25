@@ -174,12 +174,15 @@ Anything off-script returns `409 INVALID_STATE_TRANSITION`.
 
 ## 4. Admin & Operations (`/_harness/*`)
 
-Per-tenant scoring-harness endpoints. **Reserved for the harness** — contract §4.2.4 says the bot MUST NOT call these. Always scoped to the caller's data (plus the canonical contract fixtures).
+Per-tenant scoring-harness endpoints. **Reserved for the harness** — contract §4.2.4 says the bot MUST NOT call these. Always scoped to the caller's data (plus the canonical contract fixtures for reads).
 
 | Method | Path | Purpose |
 | :--- | :--- | :--- |
 | `GET` | `/_harness/state` | Full snapshot: patients, slots, appointments. |
-| `GET` | `/_harness/patients` | Patients in caller's scope. |
+| `GET` | `/_harness/patients` | Patients visible to the caller (own scope + canonical). |
+| `POST` | `/_harness/patients` | Create a patient in the caller's tenant scope. Server generates `patient_id`. Canonical fixtures are unreachable (always assign a new id). |
+| `PATCH` | `/_harness/patients/{id}` | Partial update. Canonical fixtures are hidden (`404`). Only the caller's own patients are writable. |
+| `DELETE` | `/_harness/patients/{id}` | Hard-delete from the caller's tenant scope. Canonical fixtures hidden (`404`). No cascade — appointments referencing the patient must be cancelled/rescheduled first. |
 | `GET` | `/_harness/slots` | Slots in caller's scope. |
 | `GET` | `/_harness/appointments` | Appointments in caller's scope. |
 | `GET` | `/_harness/snapshot` | Capture current state, returns `snapshot_id`. |
@@ -187,6 +190,29 @@ Per-tenant scoring-harness endpoints. **Reserved for the harness** — contract 
 | `POST` | `/_harness/seed` | Reset and seed canonical + per-tenant fixtures. |
 | `POST` | `/_harness/reset` | Flush and re-seed. |
 | `POST` | `/_harness/time-travel` | Advance the system clock by `seconds` (signed). |
+
+### 4.1 Patient scaffolding (CRUD)
+
+Test setup can add/edit/remove patients without touching the canonical contract fixtures. The harness sees both its own (mutable) and canonical (read-only) patients via `GET /_harness/patients`. Mutations (`POST` / `PATCH` / `DELETE`) only operate on the caller's own tenant scope — every canonical fixture id (`pt_3391`, etc.) returns `404 NOT_FOUND` on write attempts to keep the contract source-of-truth fixtures immutable.
+
+```bash
+# Create
+curl -s -X POST "$HOST/_harness/patients" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name":"Test T.","phone":"0912345678","dob":"1990-01-01",
+       "verify":{"full_name":"Trần Thị Test","dob":"1990-01-01"}}'
+
+# Patch (e.g. flip display_name)
+curl -s -X PATCH "$HOST/_harness/patients/pt_xxxxxxxxxxxx" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name":"Renamed"}'
+
+# Delete
+curl -s -X DELETE "$HOST/_harness/patients/pt_xxxxxxxxxxxx" \
+  -H "Authorization: Bearer $KEY"
+```
 
 ## 5. Data Models
 

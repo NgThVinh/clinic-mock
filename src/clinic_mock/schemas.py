@@ -42,6 +42,24 @@ class Patient(BaseModel):
     verify: PatientVerify | None = None
 
 
+class PatientCreate(BaseModel):
+    """Body for POST /_harness/patients — server generates the patient_id."""
+
+    display_name: str
+    phone: Phone
+    dob: IsoDate
+    verify: PatientVerify | None = None
+
+
+class PatientUpdate(BaseModel):
+    """Body for PATCH /_harness/patients/{id} — all fields optional."""
+
+    display_name: str | None = None
+    phone: Phone | None = None
+    dob: IsoDate | None = None
+    verify: PatientVerify | None = None
+
+
 class Slot(BaseModel):
     slot_id: str
     tenant_id: str = Field(exclude=True)
