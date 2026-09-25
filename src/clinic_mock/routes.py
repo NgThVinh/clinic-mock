@@ -38,7 +38,6 @@ from clinic_mock.schemas import (
     Patient,
     PatientCreate,
     PatientUpdate,
-    PatientVerify,
     RescheduleRequest,
     Slot,
     TransferRequest,
@@ -162,10 +161,16 @@ def list_slots(
     clinic_id: str,
     from_: Annotated[
         str,
-        Query(alias="from", pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"),
+        Query(
+            alias="from",
+            pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$",
+        ),
     ],
     to: Annotated[
-        str, Query(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
+        str,
+        Query(
+            pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+        ),
     ],
     cursor: str | None = None,
     limit: int = 25,
@@ -528,9 +533,7 @@ def harness_state(request: Request):
         "patients": [
             p.model_dump() for p in db.patients.values() if p.tenant_id in tenants
         ],
-        "slots": [
-            s.model_dump() for s in db.slots.values() if s.tenant_id in tenants
-        ],
+        "slots": [s.model_dump() for s in db.slots.values() if s.tenant_id in tenants],
         "appointments": [
             a.model_dump() for a in db.appointments.values() if a.tenant_id in tenants
         ],
@@ -544,9 +547,7 @@ def harness_patients(request: Request):
     return [p.model_dump() for p in db.patients.values() if p.tenant_id in tenants]
 
 
-@harness.post(
-    "/patients", status_code=status.HTTP_201_CREATED, tags=["Admin"]
-)
+@harness.post("/patients", status_code=status.HTTP_201_CREATED, tags=["Admin"])
 def create_patient(
     request: Request,
     body: PatientCreate,
@@ -617,9 +618,7 @@ def harness_slots(request: Request):
 @harness.get("/appointments", tags=["Admin"])
 def harness_appointments(request: Request):
     tenants = _visible_tenants(_tenant(request))
-    return [
-        a.model_dump() for a in db.appointments.values() if a.tenant_id in tenants
-    ]
+    return [a.model_dump() for a in db.appointments.values() if a.tenant_id in tenants]
 
 
 @harness.get("/snapshot", tags=["Admin"])

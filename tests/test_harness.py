@@ -64,19 +64,13 @@ class TestHarnessSnapshot:
         )
         appt = client.get("/v1/appointments/apt_00417", headers=AUTH_A).json()
         assert appt["status"] == "CONFIRMED"
-        restore = client.post(
-            f"/_harness/snapshot/{sid}/restore", headers=AUTH_A
-        )
+        restore = client.post(f"/_harness/snapshot/{sid}/restore", headers=AUTH_A)
         assert restore.status_code == 200
-        appt_after = client.get(
-            "/v1/appointments/apt_00417", headers=AUTH_A
-        ).json()
+        appt_after = client.get("/v1/appointments/apt_00417", headers=AUTH_A).json()
         assert appt_after["status"] == "SCHEDULED"
 
     def test_restore_unknown_snapshot(self, client):
-        r = client.post(
-            "/_harness/snapshot/snap_nonexistent/restore", headers=AUTH_A
-        )
+        r = client.post("/_harness/snapshot/snap_nonexistent/restore", headers=AUTH_A)
         assert r.status_code == 404
 
 
@@ -94,9 +88,7 @@ class TestHarnessSeedReset:
         r = client.post("/_harness/reset", headers=AUTH_A)
         assert r.status_code == 200
         assert r.json()["reset"] is True
-        appt = client.get(
-            "/v1/appointments/apt_00417", headers=AUTH_A
-        ).json()
+        appt = client.get("/v1/appointments/apt_00417", headers=AUTH_A).json()
         assert appt["status"] == "SCHEDULED"
         assert appt["version"] == 3
 
