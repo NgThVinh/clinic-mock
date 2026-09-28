@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Clinic Platform API
-  version: '2.0.0'
+  version: '1.0.0'
   summary: AI-callbot clinic mock — appointment and discovery endpoints per the AI Health Residency product contract (Rev 1.0).
   description: |
     Authoritative human-readable spec: ../docs/APIs.md.
