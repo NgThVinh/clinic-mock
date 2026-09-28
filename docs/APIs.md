@@ -217,23 +217,28 @@ curl -s -X DELETE "$HOST/_harness/patients/pt_xxxxxxxxxxxx" \
 
 ### 4.2 Writelog (§4.3 step 5)
 
-`GET /_harness/writelog` returns the append-only log of every `/v1/*` mutation the mock received since the last `_harness/reset`. Each entry captures:
+`GET /_harness/writelog` returns the **time-ordered** interleaving of every `/v1/*` request the mock received since the last `_harness/reset`. The contract calls this *"every write your bot made, and every slot list it was served"* — both streams land in this one log so the harness can replay the case end-to-end.
+
+Each entry captures:
 
 * `at` — ISO timestamp
-* `op` — one of `create_appointment`, `confirm`, `cancel`, `transfer`, `reschedule`, `unreachable`
-* `method` + `path` — the request
+* `op` — one of `list_slots`, `find_patients`, `get_appointment`, `list_appointments`, `create_appointment`, `confirm`, `cancel`, `transfer`, `reschedule`, `unreachable`
+* `method` + `path` — the request (GET for reads; POST/PATCH/PUT/DELETE for writes)
 * `status` — the response status (2xx success, 4xx rejected)
-* `body` — parsed request body (for SF-02 slot-id checks)
-* `appointment_id` — extracted from the path (for SF-01 cross-write checks)
-* `if_match`, `idempotency_key` — for replay / concurrency audit
+* `body`:
+    * **For writes** (`POST/PATCH/PUT/DELETE`) — the parsed request body.
+    * **For reads** (`GET`) — the parsed response body. This is what makes SF-02 detection possible: the harness sees every slot list the bot was served, so it can verify that any slot the bot later booked (`create_appointment.body.slot_id` or `reschedule.body.new_slot_id`) was actually in a prior `list_slots.body.data[*].slot_id`.
+* `appointment_id` — extracted from the path for the relevant endpoints (writes against an appointment, plus `get_appointment` reads).
+* `if_match`, `idempotency_key` — for replay / concurrency audit (writes only).
 
-The scoring harness reads this to detect:
+The scoring harness reads this log to detect:
 
-* **SF-01** — `appointment_id` differs from the case's expected target.
-* **SF-02** — `slot_id` in a `create_appointment` entry was never returned by `/v1/slots` on this call.
+* **SF-01** — write entry has `appointment_id` ≠ the case's expected target.
+* **SF-02** — `slot_id` in a write entry was never in any preceding `list_slots` entry's `body.data[*].slot_id`.
+* **SF-03** — read against `/v1/patients` (identity lookup) happened *before* any write to `/v1/appointments/{id}/confirm|cancel|transfer`.
 * **SF-05** — a successful `cancel` entry without a prior `cancel` 409 `CONFIRMATION_REQUIRED` (the bot cancelled without the second confirmation).
 
-Query filters: `?op=<op>`, `?appointment_id=<id>`, `?limit=<1..10000>`. Snapshot/restore roundtrips the writelog alongside patients/slots/appointments.
+Query filters: `?op=<op>`, `?appointment_id=<id>`, `?limit=<1..10000>`. Snapshot/restore roundtrips the writelog alongside patients/slots/appointments. `_harness/*` (admin/CRUD) calls are **not** captured — they're scoring-side actions, not bot-side mutations.
 
 ## 5. Data Models
 

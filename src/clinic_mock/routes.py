@@ -94,6 +94,38 @@ def _get_appt(appt_id: str, caller_tenant: str) -> Appointment:
     return appt
 
 
+# ----- writelog helpers (read-side; writes are captured by middleware) -----
+
+
+def _record_writelog_read(
+    op: str,
+    request: Request,
+    *,
+    body: dict[str, Any],
+    status: int = 200,
+    appointment_id: str | None = None,
+) -> None:
+    """Append a read entry (GET /v1/*) to db.writelog for the scoring harness.
+
+    Called from `find_patients`, `list_slots`, `list_appointments`,
+    `get_appointment` so each read lands in §4.3 step 4 of the writelog.
+    Including the response body lets the harness verify SF-02 (slot booked
+    must appear in a prior `list_slots` response) and SF-03 (identity
+    verification happens before any appointment write).
+    """
+    db.writelog.append(
+        {
+            "at": now_iso(),
+            "op": op,
+            "method": "GET",
+            "path": request.url.path,
+            "status": status,
+            "body": body,
+            **({"appointment_id": appointment_id} if appointment_id else {}),
+        }
+    )
+
+
 # ----- cursor pagination -----
 
 
@@ -152,7 +184,9 @@ def find_patients(
         if p.tenant_id in tenants and p.phone == phone
     ]
     page, next_cursor, has_more = paginate(matched, cursor, limit)
-    return {"data": page, "next_cursor": next_cursor, "has_more": has_more}
+    body = {"data": page, "next_cursor": next_cursor, "has_more": has_more}
+    _record_writelog_read("find_patients", request, body=body)
+    return body
 
 
 @v1.get("/slots", tags=["Discovery"])
@@ -189,7 +223,9 @@ def list_slots(
 
     matched = [s.model_dump() for s in db.slots.values() if in_window(s)]
     page, next_cursor, has_more = paginate(matched, cursor, limit)
-    return {"data": page, "next_cursor": next_cursor, "has_more": has_more}
+    body = {"data": page, "next_cursor": next_cursor, "has_more": has_more}
+    _record_writelog_read("list_slots", request, body=body)
+    return body
 
 
 # ===== Appointments =====
@@ -268,7 +304,12 @@ def _patient_ref(patient: Patient):
 
 @v1.get("/appointments/{appt_id}", tags=["Appointments"])
 def get_appointment(request: Request, appt_id: str):
-    return _get_appt(appt_id, _tenant(request)).model_dump()
+    appt = _get_appt(appt_id, _tenant(request))
+    body = appt.model_dump()
+    _record_writelog_read(
+        "get_appointment", request, body=body, appointment_id=appt.appointment_id
+    )
+    return body
 
 
 @v1.get("/appointments", tags=["Appointments"])
@@ -289,7 +330,9 @@ def list_appointments(
     ]
     matched.sort(key=lambda a: a["starts_at"])
     page, next_cursor, has_more = paginate(matched, cursor, limit)
-    return {"data": page, "next_cursor": next_cursor, "has_more": has_more}
+    body = {"data": page, "next_cursor": next_cursor, "has_more": has_more}
+    _record_writelog_read("list_appointments", request, body=body)
+    return body
 
 
 @v1.post("/appointments/{appt_id}/confirm", tags=["Appointments"])

@@ -831,18 +831,32 @@ components:
           items: { $ref: '#/components/schemas/Appointment' }
     WriteLogEntry:
       type: object
-      description: 'One write the mock captured (§4.3 step 5).'
+      description: 'One /v1/* request the mock captured (§4.3 step 5 — writes + slot lists).'
       required: [at, op, method, path, status]
       properties:
         at: { type: string, format: date-time }
         op:
           type: string
-          enum: [create_appointment, confirm, cancel, transfer, reschedule, unreachable]
-        method: { type: string, enum: [POST, PATCH, PUT, DELETE] }
+          enum:
+            - list_slots
+            - find_patients
+            - get_appointment
+            - list_appointments
+            - create_appointment
+            - confirm
+            - cancel
+            - transfer
+            - reschedule
+            - unreachable
+        method: { type: string, enum: [GET, POST, PATCH, PUT, DELETE] }
         path: { type: string }
         status: { type: integer }
         body:
-          description: Parsed request body, or null if empty / not JSON.
+          description: |
+            For writes (POST/PATCH/PUT/DELETE): the parsed request body.
+            For reads (GET): the parsed response body (the slot list the bot
+            was served, the patient record fetched, etc.). Null if empty or
+            not JSON.
           oneOf:
             - type: object
             - type: 'null'

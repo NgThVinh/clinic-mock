@@ -88,18 +88,21 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def writelog_middleware(request: Request, call_next):
-        """Capture every /v1/* mutation into db.writelog (contract §4.3 step 5).
+        """Capture every /v1/* WRITE into db.writelog (contract §4.3 step 5).
 
-        Captures the request body once (Starlette caches it for downstream
-        handlers), then appends an entry with method/path/status/body and key
-        headers after the handler runs. Non-/v1 paths and pure GETs are skipped.
+        Reads (`GET /v1/*` — slot lists, patients, etc.) are captured by the
+        routes themselves via `_record_writelog_read()`. The middleware keeps
+        the read path stateless: capturing response body across the
+        Starlette middleware boundary interferes with response delivery, so
+        each read endpoint opts in by calling the helper after assembling the
+        response dict.
         """
         from clinic_mock.store import db, derive_writelog_op, now_iso
 
         method = request.method
         path = request.url.path
         op = derive_writelog_op(method, path)
-        capture = op is not None
+        capture = op is not None and method != "GET"
 
         body_bytes = b""
         if capture:

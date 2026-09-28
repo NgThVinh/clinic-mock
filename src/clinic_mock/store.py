@@ -28,16 +28,24 @@ CANONICAL_TENANT = "t_canonical"
 
 
 # /v1/* path → semantic operation name. Used by the writelog middleware to tag
-# each captured write with a stable op label that the scoring harness can match
-# against expected SF-detection rules (e.g. SF-01: "did the bot write to the
-# wrong appointment?").
-WRITELOG_PATH_OPS: dict[str, str] = {
+# each captured request with a stable op label that the scoring harness can
+# match against expected SF-detection rules (SF-01 wrong-write, SF-02 slot
+# not served, etc.).
+WRITELOG_WRITE_OPS: dict[str, str] = {
     "/v1/appointments": "create_appointment",
     "confirm": "confirm",
     "cancel": "cancel",
     "transfer": "transfer",
     "reschedule": "reschedule",
     "unreachable": "unreachable",
+}
+
+
+WRITELOG_READ_OPS: dict[str, str] = {
+    "/v1/patients": "find_patients",
+    "/v1/slots": "list_slots",
+    "/v1/appointments": "list_appointments",
+    # /v1/appointments/<id> is handled below
 }
 
 
@@ -49,6 +57,8 @@ def derive_writelog_op(method: str, path: str) -> str | None:
     """Map (method, path) to a semantic writelog `op` label.
 
     Returns None for non-v1 paths (the writelog middleware skips those).
+    Returns a `list_*` op for collection GETs (needed for SF-02 scoring —
+    the harness needs to see what slot lists the bot was served).
     """
     if not path.startswith("/v1/"):
         return None
@@ -56,14 +66,26 @@ def derive_writelog_op(method: str, path: str) -> str | None:
     if method == "POST" and norm == "/v1/appointments":
         return "create_appointment"
     parts = norm.strip("/").split("/")
-    # /v1/appointments/<id>/<action>
+    # /v1/appointments/<id>/<action> (writes)
     if (
-        len(parts) >= 4
+        method in {"POST"}
+        and len(parts) >= 4
         and parts[0] == "v1"
         and parts[1] == "appointments"
-        and parts[3] in WRITELOG_PATH_OPS
+        and parts[3] in WRITELOG_WRITE_OPS
     ):
         return parts[3]
+    # Single GETs (writes-related reads)
+    if (
+        method == "GET"
+        and len(parts) == 4
+        and parts[0] == "v1"
+        and parts[1] == "appointments"
+    ):
+        return "get_appointment"
+    # Collection GETs (read paths)
+    if method == "GET" and norm in WRITELOG_READ_OPS:
+        return WRITELOG_READ_OPS[norm]
     return None
 
 
