@@ -48,7 +48,10 @@ class TestHarnessCollections:
 
 class TestHarnessSnapshot:
     def test_snapshot_and_restore(self, client):
-        snap = client.get("/_harness/snapshot", headers=AUTH_A)
+        # Capture is POST /_harness/snapshot (state-mutating) — was GET in
+        # earlier revisions but conflicts with the new GET /snapshot list
+        # endpoint; FastAPI can't dispatch two GETs on the same path.
+        snap = client.post("/_harness/snapshot", headers=AUTH_A)
         assert snap.status_code == 200
         sid = snap.json()["snapshot_id"]
         client.post(
@@ -67,10 +70,116 @@ class TestHarnessSnapshot:
         assert r.status_code == 404
 
 
+class TestHarnessSnapshotRead:
+    def test_read_snapshot_returns_captured_state(self, client):
+        # Capture is POST /_harness/snapshot (see test_snapshot_and_restore).
+        sid = client.post("/_harness/snapshot", headers=AUTH_A).json()["snapshot_id"]
+        body = client.get(f"/_harness/snapshot/{sid}", headers=AUTH_A).json()
+        assert body["snapshot_id"] == sid
+        assert "created_at" in body
+        # Canonical fixtures are visible to every caller — they're seeded on
+        # every caller's tenant via _visible_tenants().
+        appt_ids = {a["appointment_id"] for a in body["appointments"]}
+        assert "apt_00417" in appt_ids
+        # Tenant_id is server-side only — must NOT appear in the payload.
+        assert "tenant_id" not in body
+
+    def test_read_unknown_snapshot_returns_404(self, client):
+        r = client.get("/_harness/snapshot/snap_does_not_exist", headers=AUTH_A)
+        assert r.status_code == 404
+        assert r.json()["error"]["code"] == "NOT_FOUND"
+
+    def test_read_cross_tenant_snapshot_returns_404(self, client):
+        # Tenant A creates a snapshot.
+        sid = client.post("/_harness/snapshot", headers=AUTH_A).json()["snapshot_id"]
+        # Tenant B tries to read it — existence is hidden, 404.
+        r = client.get(f"/_harness/snapshot/{sid}", headers=AUTH_B)
+        assert r.status_code == 404
+
+    def test_restore_cross_tenant_snapshot_returns_404(self, client):
+        sid = client.post("/_harness/snapshot", headers=AUTH_A).json()["snapshot_id"]
+        r = client.post(f"/_harness/snapshot/{sid}/restore", headers=AUTH_B)
+        assert r.status_code == 404
+
+    def test_restore_unknown_snapshot_returns_404(self, client):
+        r = client.post(
+            "/_harness/snapshot/snap_does_not_exist/restore", headers=AUTH_A
+        )
+        assert r.status_code == 404
+
+
+class TestHarnessSnapshotList:
+    def test_list_returns_only_caller_tenant_snapshots(self, client):
+        # Tenant A creates two snapshots; tenant B creates one.
+        client.post("/_harness/snapshot", headers=AUTH_A)
+        client.post("/_harness/snapshot", headers=AUTH_A)
+        client.post("/_harness/snapshot", headers=AUTH_B)
+        a_ids = {
+            s["snapshot_id"]
+            for s in client.get("/_harness/snapshot", headers=AUTH_A).json()[
+                "snapshots"
+            ]
+        }
+        b_ids = {
+            s["snapshot_id"]
+            for s in client.get("/_harness/snapshot", headers=AUTH_B).json()[
+                "snapshots"
+            ]
+        }
+        assert len(a_ids) == 2
+        assert len(b_ids) == 1
+        assert a_ids.isdisjoint(b_ids)
+
+    def test_list_empty_tenant_returns_empty_envelope(self, client):
+        # Fresh tenant (no snapshots taken yet).
+        body = client.get("/_harness/snapshot", headers=AUTH_B).json()
+        assert body == {"snapshots": [], "count": 0}
+
+    def test_list_each_entry_has_snapshot_id_and_created_at(self, client):
+        client.post("/_harness/snapshot", headers=AUTH_A)
+        s = client.get("/_harness/snapshot", headers=AUTH_A).json()["snapshots"][0]
+        assert set(s.keys()) == {"snapshot_id", "created_at"}
+
+    def test_list_since_until_filters_by_created_at(self, client):
+        # Capture two snapshots with a small sleep between them.
+        import time
+
+        client.post("/_harness/snapshot", headers=AUTH_A)
+        first_created_at = client.get("/_harness/snapshot", headers=AUTH_A).json()[
+            "snapshots"
+        ][0]["created_at"]
+        time.sleep(0.05)
+        client.post("/_harness/snapshot", headers=AUTH_A)
+        all_ids = {
+            s["snapshot_id"]
+            for s in client.get("/_harness/snapshot", headers=AUTH_A).json()[
+                "snapshots"
+            ]
+        }
+        filtered = client.get(
+            f"/_harness/snapshot?since={first_created_at}", headers=AUTH_A
+        ).json()
+        filtered_ids = {s["snapshot_id"] for s in filtered["snapshots"]}
+        # Since is inclusive — first_created_at snapshot should appear, plus
+        # any taken after.
+        assert first_created_at.split(".")[0] in [
+            s["created_at"].split(".")[0] for s in filtered["snapshots"]
+        ]
+        assert filtered_ids.issubset(all_ids)
+
+    def test_list_bad_iso_returns_400(self, client):
+        r = client.get("/_harness/snapshot?since=not-a-date", headers=AUTH_A)
+        assert r.status_code == 400
+        assert r.json()["error"]["code"] == "INVALID_REQUEST"
+
+
 class TestWritelogTimeFilter:
     def _seed_entries(self, client):
         # Three writes spread across ~3 distinct timestamps.
-        sid = client.get("/_harness/snapshot", headers=AUTH_A).json()["snapshot_id"]
+        # Snapshot capture is POST (see harness_snapshot route) — was GET in
+        # earlier revisions; changed to POST when GET /snapshot became the
+        # list endpoint. FastAPI can't dispatch two GETs on the same path.
+        sid = client.post("/_harness/snapshot", headers=AUTH_A).json()["snapshot_id"]
         client.post(
             "/v1/appointments/apt_00417/confirm",
             headers={**AUTH_A, **write_headers(3)},

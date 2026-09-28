@@ -171,49 +171,94 @@ class Store:
     def reset(self) -> None:
         self.__init__()
 
-    def snapshot(self) -> str:
+    def snapshot(self, tenant_id: str) -> str:
         sid = self.new_id("snap")
-        # Internal snapshots need `tenant_id` (and any other Field(exclude=True)
-        # marker) to round-trip through Pydantic validation. model_dump() drops
-        # them by default and exclude=set() does NOT override the field-level
-        # exclude=True, so we re-inject the markers explicitly.
+        # Snapshots carry `tenant_id` at the envelope level for cross-tenant
+        # access checks (see `restore`/`get_snapshot`). Inside `data` we keep
+        # the per-row `tenant_id` (and Appointment's `slot_id`/`provider_id`)
+        # because Pydantic validation on restore rejects Patient/Slot/Appointment
+        # without those fields — `Field(exclude=True)` only affects serialization,
+        # not deserialization.
         self.snapshots[sid] = {
-            "patients": {
-                k: {**v.model_dump(), "tenant_id": v.tenant_id}
-                for k, v in self.patients.items()
+            "tenant_id": tenant_id,
+            "created_at": now_iso(),
+            "data": {
+                "patients": {
+                    k: {**v.model_dump(), "tenant_id": v.tenant_id}
+                    for k, v in self.patients.items()
+                },
+                "slots": {
+                    k: {**v.model_dump(), "tenant_id": v.tenant_id}
+                    for k, v in self.slots.items()
+                },
+                "appointments": {
+                    k: {
+                        **v.model_dump(),
+                        "tenant_id": v.tenant_id,
+                        "slot_id": v.slot_id,
+                        "provider_id": v.provider_id,
+                    }
+                    for k, v in self.appointments.items()
+                },
+                "writelog": list(self.writelog.entries),
+                "system_clock_offset_sec": self.system_clock_offset_sec,
             },
-            "slots": {
-                k: {**v.model_dump(), "tenant_id": v.tenant_id}
-                for k, v in self.slots.items()
-            },
-            "appointments": {
-                k: {
-                    **v.model_dump(),
-                    "tenant_id": v.tenant_id,
-                    "slot_id": v.slot_id,
-                    "provider_id": v.provider_id,
-                }
-                for k, v in self.appointments.items()
-            },
-            "writelog": list(self.writelog.entries),
-            "system_clock_offset_sec": self.system_clock_offset_sec,
         }
         return sid
 
-    def restore(self, sid: str) -> None:
+    def get_snapshot(self, sid: str, caller_tenant_id: str) -> dict | None:
+        snap = self.snapshots.get(sid)
+        if snap is None or snap["tenant_id"] != caller_tenant_id:
+            return None
+        data = snap["data"]
+        return {
+            "snapshot_id": sid,
+            "created_at": snap["created_at"],
+            "patients": list(data["patients"].values()),
+            "slots": list(data["slots"].values()),
+            "appointments": list(data["appointments"].values()),
+            "writelog": list(data.get("writelog", [])),
+            "system_clock_offset_sec": data["system_clock_offset_sec"],
+        }
+
+    def list_snapshots(
+        self,
+        caller_tenant_id: str,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[dict]:
+        out: list[dict] = []
+        for sid, snap in self.snapshots.items():
+            if snap["tenant_id"] != caller_tenant_id:
+                continue
+            if since is not None and snap["created_at"] < since.isoformat():
+                continue
+            if until is not None and snap["created_at"] > until.isoformat():
+                continue
+            out.append({"snapshot_id": sid, "created_at": snap["created_at"]})
+        return out
+
+    def restore(self, sid: str, caller_tenant_id: str) -> None:
         snap = self.snapshots.get(sid)
         if snap is None:
             from clinic_mock.errors import not_found
 
             raise not_found(f"snapshot {sid}")
-        self.patients = {k: Patient(**v) for k, v in snap["patients"].items()}
-        self.slots = {k: Slot(**v) for k, v in snap["slots"].items()}
+        if snap["tenant_id"] != caller_tenant_id:
+            # Cross-tenant access — existence hidden, same convention as
+            # appointments / patients / slots reads.
+            from clinic_mock.errors import not_found
+
+            raise not_found(f"snapshot {sid}")
+        data = snap["data"]
+        self.patients = {k: Patient(**v) for k, v in data["patients"].items()}
+        self.slots = {k: Slot(**v) for k, v in data["slots"].items()}
         self.appointments = {
-            k: Appointment(**v) for k, v in snap["appointments"].items()
+            k: Appointment(**v) for k, v in data["appointments"].items()
         }
         self.writelog = WriteLog()
-        self.writelog.entries = list(snap.get("writelog", []))
-        self.system_clock_offset_sec = snap["system_clock_offset_sec"]
+        self.writelog.entries = list(data.get("writelog", []))
+        self.system_clock_offset_sec = data["system_clock_offset_sec"]
 
     def dump(self) -> dict:
         return {

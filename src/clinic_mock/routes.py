@@ -708,16 +708,46 @@ def harness_writelog(
     }
 
 
-@harness.get("/snapshot", tags=["Admin"])
+@harness.post("/snapshot", tags=["Admin"])
 def harness_snapshot(request: Request):
-    sid = db.snapshot()
+    """Capture a snapshot of the current store state."""
+    sid = db.snapshot(tenant_id=_tenant(request))
     return {"snapshot_id": sid}
+
+
+@harness.get("/snapshot", tags=["Admin"])
+def harness_snapshot_list(
+    request: Request,
+    since: Annotated[
+        datetime | None,
+        Query(description="Inclusive lower bound on snapshot created_at."),
+    ] = None,
+    until: Annotated[
+        datetime | None,
+        Query(description="Inclusive upper bound on snapshot created_at."),
+    ] = None,
+):
+    """List the caller's tenant's snapshots, optionally bounded by time."""
+    tenant = _tenant(request)
+    if since is not None and until is not None and since > until:
+        raise validation_error("'since' must be <= 'until'.")
+    snapshots = db.list_snapshots(caller_tenant_id=tenant, since=since, until=until)
+    return {"snapshots": snapshots, "count": len(snapshots)}
 
 
 @harness.post("/snapshot/{sid}/restore", tags=["Admin"])
 def harness_snapshot_restore(request: Request, sid: str):
-    db.restore(sid)
+    db.restore(sid, caller_tenant_id=_tenant(request))
     return {"restored": sid}
+
+
+@harness.get("/snapshot/{sid}", tags=["Admin"])
+def harness_snapshot_read(request: Request, sid: str):
+    """Read a captured snapshot. Tenant-scoped — other tenants get 404."""
+    body = db.get_snapshot(sid, caller_tenant_id=_tenant(request))
+    if body is None:
+        raise not_found(f"snapshot {sid}")
+    return body
 
 
 @harness.post("/seed", tags=["Admin"])
