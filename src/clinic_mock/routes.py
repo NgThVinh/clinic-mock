@@ -671,6 +671,14 @@ def harness_writelog(
     appointment_id: Annotated[
         str | None, Query(description="Filter by affected appointment id")
     ] = None,
+    since: Annotated[
+        datetime | None,
+        Query(description="Inclusive lower bound (ISO 8601)."),
+    ] = None,
+    until: Annotated[
+        datetime | None,
+        Query(description="Inclusive upper bound (ISO 8601)."),
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=10000)] = 1000,
 ):
     """Append-only log of every /v1/* mutation since the last reset (§4.3 step 5).
@@ -679,11 +687,19 @@ def harness_writelog(
     SF-02 (offer slot not returned by /slots), and SF-05 (cancel without the
     second confirmation — visible as a 409 entry). Captures request body,
     status, If-Match and Idempotency-Key on each write.
+
+    Pass `since` / `until` (ISO 8601) to scope entries to a single test's
+    time window — the harness brackets each test with `t_start` before the
+    first turn and `t_end` after the last.
     """
     _tenant(request)  # auth gate
+    if since is not None and until is not None and since > until:
+        raise validation_error("'since' must be <= 'until'.")
     entries = db.writelog.query(
         op=op,
         appointment_id=appointment_id,
+        since=since,
+        until=until,
     )
     return {
         "entries": entries[:limit],

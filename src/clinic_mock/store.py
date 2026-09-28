@@ -53,6 +53,18 @@ def now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+def _parse_iso(value: str) -> datetime | None:
+    """Parse an ISO 8601 string as produced by `now_iso()` or any RFC 3339 input.
+
+    Accepts both `Z` suffix and explicit `±HH:MM` offsets. Returns None on
+    malformed input (so `WriteLog.query` can drop entries without an `at`).
+    """
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def derive_writelog_op(method: str, path: str) -> str | None:
     """Map (method, path) to a semantic writelog `op` label.
 
@@ -110,12 +122,31 @@ class WriteLog:
         self,
         op: str | None = None,
         appointment_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[dict]:
         out = self.entries
         if op is not None:
             out = [e for e in out if e.get("op") == op]
         if appointment_id is not None:
             out = [e for e in out if e.get("appointment_id") == appointment_id]
+        if since is not None or until is not None:
+            since_dt = since
+            until_dt = until
+            kept: list[dict] = []
+            for e in out:
+                at_raw = e.get("at")
+                if not at_raw:
+                    continue
+                at_dt = _parse_iso(at_raw)
+                if at_dt is None:
+                    continue
+                if since_dt is not None and at_dt < since_dt:
+                    continue
+                if until_dt is not None and at_dt > until_dt:
+                    continue
+                kept.append(e)
+            out = kept
         return out
 
 
