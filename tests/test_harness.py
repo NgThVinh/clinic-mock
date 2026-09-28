@@ -172,6 +172,39 @@ class TestHarnessSnapshotList:
         assert r.status_code == 400
         assert r.json()["error"]["code"] == "INVALID_REQUEST"
 
+    def test_list_since_until_handles_cross_format_timestamps(self, client):
+        # Snapshot `created_at` is in `now_iso()` format (3-digit ms + `Z`).
+        # Callers can pass `since`/`until` in `datetime.isoformat()` format
+        # (6-digit µs + `+00:00`). The two formats are NOT lexicographically
+        # comparable ('Z' (0x5A) > '0' (0x30)) but represent the same
+        # moment semantically. `list_snapshots` must parse both sides via
+        # `_parse_iso` and compare `datetime` objects — mirrors
+        # `WriteLog.query`.
+        import time
+        from datetime import UTC, datetime
+        from urllib.parse import quote
+
+        client.post("/_harness/snapshot", headers=AUTH_A)
+        # Wait long enough that "now" is unambiguously after the snapshot
+        # (50ms — well above any system clock granularity).
+        time.sleep(0.05)
+
+        since_dt = datetime.now(UTC)
+        until_dt = since_dt.replace(year=since_dt.year + 1)
+
+        # URL-encode the `+` so the offset survives query-string parsing.
+        r = client.get(
+            f"/_harness/snapshot?since={quote(since_dt.isoformat())}"
+            f"&until={quote(until_dt.isoformat())}",
+            headers=AUTH_A,
+        )
+        assert r.status_code == 200
+        # Snapshot was captured ~50ms before `since_dt`, so it must be
+        # excluded — the buggy string-compare version would include it
+        # (lex compare: '...123Z' > '...123456+00:00' since 'Z' > '4').
+        assert r.json()["snapshots"] == []
+        assert r.json()["count"] == 0
+
 
 class TestWritelogTimeFilter:
     def _seed_entries(self, client):

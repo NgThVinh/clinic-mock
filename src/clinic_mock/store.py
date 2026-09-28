@@ -231,10 +231,17 @@ class Store:
         for sid, snap in self.snapshots.items():
             if snap["tenant_id"] != caller_tenant_id:
                 continue
-            if since is not None and snap["created_at"] < since.isoformat():
-                continue
-            if until is not None and snap["created_at"] > until.isoformat():
-                continue
+            if since is not None or until is not None:
+                # Compare via datetime objects so cross-format timestamps
+                # (now_iso's ms+Z vs caller-supplied µs+offset) compare
+                # correctly. Mirrors WriteLog.query's pattern.
+                created_at_dt = _parse_iso(snap["created_at"])
+                if created_at_dt is None:
+                    continue
+                if since is not None and created_at_dt < since:
+                    continue
+                if until is not None and created_at_dt > until:
+                    continue
             out.append({"snapshot_id": sid, "created_at": snap["created_at"]})
         return out
 
