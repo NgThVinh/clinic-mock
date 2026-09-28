@@ -356,6 +356,8 @@ paths:
       parameters:
         - { in: query, name: op, schema: { type: string }, description: 'Filter by op label (create_appointment, confirm, cancel, transfer, reschedule, unreachable).' }
         - { in: query, name: appointment_id, schema: { type: string }, description: 'Filter by affected appointment id (e.g. SF-01 detection).' }
+        - { in: query, name: since, schema: { type: string, format: date-time }, description: 'Inclusive lower bound on entry `at` (ISO 8601). Used to scope a query to one test''s time window.' }
+        - { in: query, name: until, schema: { type: string, format: date-time }, description: 'Inclusive upper bound on entry `at` (ISO 8601).' }
         - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 10000, default: 1000 } }
       responses:
         '200':
@@ -492,6 +494,35 @@ paths:
   /_harness/snapshot:
     get:
       tags: [Admin]
+      operationId: harnessSnapshotList
+      summary: List the caller's tenant's snapshots, optionally bounded by `since`/`until`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { in: query, name: since, schema: { type: string, format: date-time }, description: 'Inclusive lower bound on snapshot `created_at` (ISO 8601).' }
+        - { in: query, name: until, schema: { type: string, format: date-time }, description: 'Inclusive upper bound on snapshot `created_at` (ISO 8601).' }
+      responses:
+        '200':
+          description: Caller's snapshots.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [snapshots, count]
+                properties:
+                  snapshots:
+                    type: array
+                    items:
+                      type: object
+                      required: [snapshot_id, created_at]
+                      properties:
+                        snapshot_id: { type: string }
+                        created_at: { type: string, format: date-time }
+                  count: { type: integer }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/BadKey' }
+    post:
+      tags: [Admin]
       operationId: harnessSnapshot
       summary: Capture a state snapshot for later restore.
       security:
@@ -507,6 +538,42 @@ paths:
                   snapshot_id: { type: string }
                 required: [snapshot_id]
         '401': { $ref: '#/components/responses/BadKey' }
+
+  /_harness/snapshot/{sid}:
+    parameters:
+      - { in: path, name: sid, required: true, schema: { type: string } }
+    get:
+      tags: [Admin]
+      operationId: harnessSnapshotRead
+      summary: Read a captured snapshot. Tenant-scoped.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [snapshot_id, created_at, patients, slots, appointments, writelog]
+                properties:
+                  snapshot_id: { type: string }
+                  created_at: { type: string, format: date-time }
+                  patients:
+                    type: array
+                    items: { $ref: '#/components/schemas/Patient' }
+                  slots:
+                    type: array
+                    items: { $ref: '#/components/schemas/Slot' }
+                  appointments:
+                    type: array
+                    items: { $ref: '#/components/schemas/Appointment' }
+                  writelog:
+                    type: array
+                    items: { $ref: '#/components/schemas/WriteLogEntry' }
+                  system_clock_offset_sec: { type: integer }
+        '401': { $ref: '#/components/responses/BadKey' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /_harness/snapshot/{sid}/restore:
     post:

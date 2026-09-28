@@ -240,6 +240,41 @@ The scoring harness reads this log to detect:
 
 Query filters: `?op=<op>`, `?appointment_id=<id>`, `?limit=<1..10000>`. Snapshot/restore roundtrips the writelog alongside patients/slots/appointments. `_harness/*` (admin/CRUD) calls are **not** captured — they're scoring-side actions, not bot-side mutations.
 
+### 4.3 Time-scoped test queries (§4.3 step 5)
+
+The harness drives one test at a time. To scope the writelog and snapshots
+to that test, bracket it with timestamps and snapshot before/after. Every
+write+read the bot made during the test, plus a "before" view, comes back
+over four GETs:
+
+```bash
+# Setup
+SID=$(curl -sX POST "$HOST/_harness/snapshot" -H "$AUTH" | jq -r .snapshot_id)
+T_START=$(now_iso)   # harness keeps this locally
+
+# Drive the test (contract §4.3 figure 2)
+curl -sX POST "$BOT/v1/calls" -d '{...}'                       # → call_id (on bot)
+curl -sX POST "$BOT/v1/calls/$CALL_ID/turn" -d '{...}' × N     # bot hits /v1/* internally
+
+T_END=$(now_iso)
+
+# Verify — everything-for-test-X
+curl -s "$HOST/_harness/writelog?since=$T_START&until=$T_END" -H "$AUTH"
+curl -s "$HOST/_harness/snapshot/$SID" -H "$AUTH"
+curl -s "$HOST/_harness/state" -H "$AUTH"
+```
+
+`GET /_harness/snapshot/{sid}` returns the snapshot's contents; the harness
+diffs against `/_harness/state` to find what changed.
+
+`GET /_harness/snapshot` lists the caller's snapshots, optionally bounded
+by `?since=<iso>&until=<iso>` (both inclusive on `created_at`). Useful for
+cleanup; not required if the harness tracks ids externally.
+
+Both snapshot read endpoints are tenant-scoped: cross-tenant access returns
+`404 NOT_FOUND` (existence hidden). Bad ISO timestamps return
+`400 INVALID_REQUEST`. `since > until` returns `400 INVALID_REQUEST`.
+
 ## 5. Data Models
 
 ### `Patient`
